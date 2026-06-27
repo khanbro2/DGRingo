@@ -1,0 +1,59 @@
+import type { ReactNode } from "react";
+import { Link } from "../router";
+
+/** DGRINGO wordmark + gradient glyph. */
+export function Logo({ size = 18 }: { size?: number }) {
+  return (
+    <Link to="/" className="dg-logo">
+      <span className="dg-logo-mark" aria-hidden>D</span>
+      <span style={{ fontSize: size }}>DGRINGO</span>
+    </Link>
+  );
+}
+
+/** Pill button rendered as a hash link. */
+export function LinkButton({
+  to,
+  children,
+  variant = "primary",
+  size,
+}: {
+  to: string;
+  children: ReactNode;
+  variant?: "primary" | "ghost";
+  size?: "sm" | "lg";
+}) {
+  const cls = ["dg-btn", `dg-btn-${variant}`, size ? `dg-btn-${size}` : ""].join(" ");
+  return (
+    <Link to={to} className={cls}>
+      {children}
+    </Link>
+  );
+}
+
+/** Eyebrow label + heading + lead, the standard section intro. */
+export function SectionIntro({
+  eyebrow,
+  title,
+  lead,
+  center = true,
+}: {
+  eyebrow?: string;
+  title: ReactNode;
+  lead?: ReactNode;
+  center?: boolean;
+}) {
+  return (
+    <div style={{ textAlign: center ? "center" : "left", maxWidth: center ? 760 : 640, margin: center ? "0 auto" : 0 }}>
+      {eyebrow && <span className="dg-eyebrow">{eyebrow}</span>}
+      <h2 className="dg-h2" style={{ marginTop: eyebrow ? 22 : 0 }}>
+        {title}
+      </h2>
+      {lead && (
+        <p className="dg-lead" style={{ marginTop: 18, marginLeft: center ? "auto" : 0, marginRight: center ? "auto" : 0, maxWidth: 620 }}>
+          {lead}
+        </p>
+      )}
+    </div>
+  );
+}
