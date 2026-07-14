@@ -11,23 +11,28 @@
  */
 import crypto from "node:crypto";
 
-const VAPID_PUBLIC = process.env.VAPID_PUBLIC || "";
-const VAPID_PRIVATE_PEM = process.env.VAPID_PRIVATE_B64 ? Buffer.from(process.env.VAPID_PRIVATE_B64, "base64").toString() : "";
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:admin@digiringo.com";
+// Read env LAZILY (not at module load): this module is imported before the
+// server calls process.loadEnvFile(), so a top-level read would see empty vars.
+const cfg = () => ({
+  pub: process.env.VAPID_PUBLIC || "",
+  privPem: process.env.VAPID_PRIVATE_B64 ? Buffer.from(process.env.VAPID_PRIVATE_B64, "base64").toString() : "",
+  subject: process.env.VAPID_SUBJECT || "mailto:admin@digiringo.com",
+});
 
-export const vapidPublicKey = () => VAPID_PUBLIC;
-export const webPushConfigured = () => !!(VAPID_PUBLIC && VAPID_PRIVATE_PEM);
+export const vapidPublicKey = () => cfg().pub;
+export const webPushConfigured = () => { const c = cfg(); return !!(c.pub && c.privPem); };
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 
 /** VAPID Authorization header for a given push endpoint. */
 function vapidAuth(endpoint) {
+  const c = cfg();
   const { protocol, host } = new URL(endpoint);
   const header = b64url(JSON.stringify({ typ: "JWT", alg: "ES256" }));
-  const payload = b64url(JSON.stringify({ aud: `${protocol}//${host}`, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: VAPID_SUBJECT }));
+  const payload = b64url(JSON.stringify({ aud: `${protocol}//${host}`, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: c.subject }));
   const signingInput = `${header}.${payload}`;
-  const sig = crypto.sign("SHA256", Buffer.from(signingInput), { key: crypto.createPrivateKey(VAPID_PRIVATE_PEM), dsaEncoding: "ieee-p1363" });
-  return `vapid t=${signingInput}.${b64url(sig)}, k=${VAPID_PUBLIC}`;
+  const sig = crypto.sign("SHA256", Buffer.from(signingInput), { key: crypto.createPrivateKey(c.privPem), dsaEncoding: "ieee-p1363" });
+  return `vapid t=${signingInput}.${b64url(sig)}, k=${c.pub}`;
 }
 
 /** Encrypt `payload` (Buffer) for a subscription using aes128gcm (RFC 8291). */
