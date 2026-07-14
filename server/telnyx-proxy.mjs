@@ -422,7 +422,9 @@ async function ensureUserSipCredential(uid) {
     const chk = await telnyxFetch(`/credential_connections/${v.sipCredentialId}`).catch(() => null);
     if (chk && chk.ok) {
       await telnyxFetch(`/credential_connections/${v.sipCredentialId}`, {
-        method: "PATCH", body: JSON.stringify({ user_name: username, password }),
+        // sip_uri_calling_preference must be enabled or dialing sip:user@sip.telnyx.com
+        // from the TeXML app is REJECTED with SIP 403 → the call never rings the app.
+        method: "PATCH", body: JSON.stringify({ user_name: username, password, sip_uri_calling_preference: "unrestricted" }),
       }).catch(() => {}); // keep creds pinned to our known values (idempotent)
       return { credentialId: v.sipCredentialId, sipUsername: username, password };
     }
@@ -430,7 +432,7 @@ async function ensureUserSipCredential(uid) {
   // Create a dedicated per-user credential connection (+ OVP so outbound works).
   const ovp = await ensureOutboundProfileId().catch(() => null);
   const cr = await telnyxFetch("/credential_connections", {
-    method: "POST", body: JSON.stringify({ connection_name: `DGRINGO u${uid}`, user_name: username, password }),
+    method: "POST", body: JSON.stringify({ connection_name: `DGRINGO u${uid}`, user_name: username, password, sip_uri_calling_preference: "unrestricted" }),
   });
   const cj = await cr.json().catch(() => ({}));
   if (!cr.ok || !cj?.data?.id) throw new Error(cj?.errors?.[0]?.detail || "Could not create voice identity");
@@ -653,6 +655,10 @@ createServer(async (req, res) => {
       const to = q.get("to") || p.get("To") || "";
       const from = q.get("from") || p.get("From") || "";
       const dialStatus = p.get("DialCallStatus") || "";
+      // TEMP diagnostic — trace inbound routing (why calls hit voicemail).
+      const allParams = {}; for (const [k, val] of p) allParams[k] = val;
+      const own = db ? await db.findNumberOwner(to).catch(() => null) : null;
+      console.error(`☎ TEXML stage=${stage} to=${to} from=${from} dialStatus=${dialStatus} sip=${own?.sipUsername || "-"} fwd=${own?.forwardNumber || "-"} vm=${own?.voicemailEnabled} params=${JSON.stringify(allParams)}`);
       // If a prior <Dial> leg was answered & completed, stop — don't fall through
       // to voicemail after a real conversation.
       if (dialStatus === "completed" || dialStatus === "answered") {
@@ -1024,6 +1030,7 @@ createServer(async (req, res) => {
       // both places AND receives calls — inbound rings the right user's app.
       try {
         const { sipUsername, password } = await ensureUserSipCredential(uid);
+        console.error(`☎ RTC-TOKEN uid=${uid} sip=${sipUsername} caller=${callerNumber}`); // TEMP diagnostic
         return send(res, 200, { login: sipUsername, password, sipUsername, callerNumber, callerName });
       } catch (e) {
         // Fallback to the shared static credential so voice still works at all.

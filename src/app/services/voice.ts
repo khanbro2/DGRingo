@@ -133,20 +133,26 @@ function onNotification(n: { type?: string; call?: AnyCall }) {
   }
   if (n?.type !== "callUpdate" || !n.call) return;
   const c = n.call;
+  const dir = String(c.direction ?? "");
+  const st = String(c.state ?? "");
 
-  console.info("[voice] callUpdate:", c.direction, c.state);
-  // Brand-new INBOUND call (we have no active call) → ring the incoming UI.
-  if (!call && c.direction === "inbound" && (c.state === "ringing" || c.state === "new")) {
+  console.info("[voice] callUpdate:", dir, st, "tracking=", call?.id ?? "none", "cid=", c.id);
+  // Brand-new INBOUND call we're not already tracking → ring the incoming UI.
+  // Lenient on state (SDK may report new/ringing/early) — just not a terminal one.
+  const terminal = st === "hangup" || st === "destroy" || st === "purge";
+  const isNewInbound = (!call || call.id !== c.id) && dir === "inbound" && !terminal && st !== "active";
+  if (isNewInbound) {
+    console.info("[voice] ✅ INCOMING → showing ring UI", c.id);
     call = c;
     pushSnap({
       phase: "incoming", direction: "inbound",
-      contact: c.options?.remoteCallerNumber || "Unknown caller",
+      contact: (c.options?.remoteCallerNumber || (c as { remoteCallerNumber?: string }).remoteCallerNumber || "Unknown caller") as string,
       callerNumber: myCaller, muted: false, quality: "unknown", startedAt: null,
     });
     return;
   }
   // Update for the call we're tracking.
-  if (call && c.id === call.id) applyState(c.state);
+  if (call && c.id === call.id) applyState(st);
 }
 
 /** Map the SDK's Verto call state to our phases. */
