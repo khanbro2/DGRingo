@@ -35,7 +35,12 @@ export async function initNative(): Promise<void> {
     });
   } catch { /* plugin unavailable */ }
 
-  await initPush();
+  // Push is OFF until Firebase is configured. Calling PushNotifications.register()
+  // without google-services.json throws a NATIVE fatal ("Default FirebaseApp is
+  // not initialized") that crashes the app on launch — a JS try/catch can't stop
+  // it. Re-enable by adding google-services.json + flipping PUSH_ENABLED to true.
+  const PUSH_ENABLED = false;
+  if (PUSH_ENABLED) await initPush();
 }
 
 async function initPush(): Promise<void> {
