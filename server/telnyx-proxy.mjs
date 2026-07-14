@@ -290,6 +290,17 @@ async function serveStatic(req, res) {
 }
 
 const digits = (s) => (s ?? "").replace(/\D/g, "");
+
+// Parse a "M:SS" / "H:MM:SS" call duration into billed minutes (rounded up per
+// minute, min 1 for any connected call). Empty/"0:00" → 0 (nothing to meter).
+const callMinutes = (dur) => {
+  const s = String(dur || "").trim();
+  if (!s) return 0;
+  const parts = s.split(":").map((n) => parseInt(n, 10));
+  if (parts.length < 2 || parts.some((n) => Number.isNaN(n))) return 0;
+  const sec = parts.reduce((acc, p) => acc * 60 + p, 0);
+  return sec > 0 ? Math.ceil(sec / 60) : 0;
+};
 const shortTime = () =>
   new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -1032,7 +1043,12 @@ createServer(async (req, res) => {
       let d; try { d = JSON.parse(body || "{}"); } catch { d = {}; }
       try {
         const r = await db.logCall(uid, { contact: d.contact, direction: d.direction, status: d.status, duration: d.duration, via: d.via });
-        return send(res, 200, { ok: true, id: r.id });
+        // Meter connected-call minutes against the plan (overflow billed to wallet
+        // by applyUsage). Missed/failed calls carry no duration → nothing metered.
+        const mins = callMinutes(d.duration);
+        let usage = null;
+        if (mins > 0) { try { usage = await db.applyUsage(uid, { minutes: mins }); } catch (e) { console.error("applyUsage(call):", e.message); } }
+        return send(res, 200, { ok: true, id: r.id, minutes: mins, usage });
       } catch (e) { return send(res, 500, { error: e.message }); }
     }
     return send(res, 405, { error: "Method not allowed" });
