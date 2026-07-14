@@ -1,49 +1,41 @@
-import { useEffect, useRef, useState, type ReactNode, type CSSProperties, type ElementType } from "react";
+import type { ReactNode, CSSProperties, ElementType } from "react";
+import { motion } from "motion/react";
 
 /**
- * Scroll-reveal wrapper. Fades + lifts its children into view once, the way
- * Apple's product pages stage content as you scroll. Pure IntersectionObserver
- * + a CSS class toggle — no animation library needed for the common case.
+ * Scroll-reveal wrapper — fades + lifts its children into view once, the way
+ * Apple's product pages stage content as you scroll. Powered by Motion
+ * (framer-motion v12) via `whileInView`, so it respects reduced-motion (see the
+ * MotionConfig in SiteApp) and animates with a soft spring-like ease.
  */
+const EASE = [0.22, 1, 0.36, 1] as const;
+
 export function Reveal({
   children,
   delay = 0,
-  as: Tag = "div",
+  as = "div",
   className = "",
   style,
 }: {
   children: ReactNode;
+  /** stagger delay in milliseconds (kept ms for call-site compatibility) */
   delay?: number;
   as?: ElementType;
   className?: string;
   style?: CSSProperties;
 }) {
-  const ref = useRef<HTMLElement>(null);
-  const [shown, setShown] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setShown(true);
-          io.disconnect();
-        }
-      },
-      { threshold: 0.16, rootMargin: "0px 0px -8% 0px" }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
+  // esbuild strips types; motion is a proxy that resolves string tags at runtime.
+  const MotionTag: ElementType = (motion as Record<string, ElementType>)[as as string] ?? motion.div;
 
   return (
-    <Tag
-      ref={ref}
-      className={`dg-reveal ${shown ? "in" : ""} ${className}`}
-      style={{ transitionDelay: `${delay}ms`, ...style }}
+    <MotionTag
+      className={className}
+      style={style}
+      initial={{ opacity: 0, y: 26 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.18, margin: "0px 0px -8% 0px" }}
+      transition={{ duration: 0.7, ease: EASE, delay: delay / 1000 }}
     >
       {children}
-    </Tag>
+    </MotionTag>
   );
 }

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { motion } from "motion/react";
 import { Link } from "../router";
 
 /** DGRINGO wordmark + gradient glyph. */
@@ -25,9 +26,16 @@ export function LinkButton({
 }) {
   const cls = ["dg-btn", `dg-btn-${variant}`, size ? `dg-btn-${size}` : ""].join(" ");
   return (
-    <Link to={to} className={cls}>
-      {children}
-    </Link>
+    <motion.span
+      style={{ display: "inline-flex" }}
+      whileHover={{ scale: 1.04 }}
+      whileTap={{ scale: 0.96 }}
+      transition={{ type: "spring", stiffness: 400, damping: 17 }}
+    >
+      <Link to={to} className={cls}>
+        {children}
+      </Link>
+    </motion.span>
   );
 }
 

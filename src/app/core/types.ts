@@ -93,6 +93,24 @@ export interface WalletTxn {
   time: string;
 }
 
+/** The workspace's active bundle (null = pay-as-you-go, no bundle). */
+export interface Subscription {
+  tier: string;                       // "starter" | "business" | "pro"
+  cycle: "monthly" | "annual";
+  minutesIncluded: number;
+  smsIncluded: number;
+  minutesUsed: number;
+  smsUsed: number;
+  status: string;                     // "active" | "past_due" | "expired" | ...
+  periodEnd: number;                  // epoch ms when the current period ends
+  payMethod: "wallet" | "card";       // how the plan was paid for
+  autoRenew: boolean;                 // renews from the wallet each cycle
+  renewAmount: number;                // amount charged on renewal
+  numbersUsed: number;                // numbers currently held on the plan
+  numbersIncluded: number;            // free numbers included (first is free)
+  numbersMax: number;                 // total numbers the plan can hold
+}
+
 export interface User {
   id: string;
   name: string;
@@ -101,6 +119,8 @@ export interface User {
   initial: string;
   phone?: string;
   company?: string;
+  /** Whether the account's email has been confirmed via the verification link. */
+  emailVerified?: boolean;
 }
 
 /** App + notification preferences (toggled from Settings sub-screens). */
@@ -126,6 +146,42 @@ export interface BrandInfo {
   campaignId?: string;
 }
 
+/** Business details collected for 10DLC brand registration — the A2P "KYC". No
+ *  document upload: carriers validate the EIN/registration number automatically. */
+export interface BrandRegistration {
+  entityType: "PRIVATE_PROFIT" | "PUBLIC_PROFIT" | "NON_PROFIT" | "GOVERNMENT" | "SOLE_PROPRIETOR";
+  displayName: string;
+  companyName: string;
+  ein: string;          // Tax ID / EIN (or local business registration number)
+  vertical: string;     // industry vertical
+  email: string;
+  phone: string;        // E.164 contact number
+  website: string;
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;      // ISO-2
+}
+
+/** Campaign details for 10DLC (use case + consent + sample messages). */
+export interface CampaignRegistration {
+  usecase: string;
+  description: string;
+  sample1: string;
+  sample2: string;
+  messageFlow: string;  // how subscriber consent (opt-in) is collected
+}
+
+/** A document a number's country regulations require (KYC for the number). */
+export interface RegulatoryRequirement {
+  id: string;
+  name: string;          // e.g. "Proof of ID", "Proof of address"
+  description: string;
+  type: "document" | "address" | "field";
+  required: boolean;
+}
+
 export interface AppState {
   user: User | null;
   /** 10DLC brand for the workspace (null until registered). */
@@ -135,6 +191,8 @@ export interface AppState {
   calls: CallLog[];
   activity: ActivityItem[];
   wallet: { balance: number; txns: WalletTxn[] };
+  /** Active bundle for the workspace, or null when on pay-as-you-go. */
+  subscription: Subscription | null;
   preferences: Preferences;
   /** Blocked external numbers. */
   blocked: string[];

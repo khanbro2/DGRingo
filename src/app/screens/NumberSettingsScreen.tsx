@@ -111,7 +111,7 @@ function ToggleRow({ label, sub, on, onClick }: { label: string; sub?: string; o
     <Row label={label} sub={sub}>
       <button onClick={onClick} style={{
         width: 44, height: 26, borderRadius: 13, border: "none", cursor: "pointer", position: "relative",
-        background: on ? gradients.brand : "rgba(255,255,255,0.12)", transition: "background 0.2s",
+        background: on ? gradients.brand : "rgba(120,130,150,0.35)", transition: "background 0.2s",
       }}>
         <span style={{ position: "absolute", top: 3, left: on ? 21 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
       </button>

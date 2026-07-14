@@ -1,29 +1,45 @@
-import { useState, useRef, useEffect, type CSSProperties, type MutableRefObject } from "react";
-import { ArrowLeft, ArrowDownLeft, ArrowUpRight, Plus, X, ShieldAlert } from "lucide-react";
-import { C, gradients, font, radius } from "../core/theme";
+import { useState, type CSSProperties } from "react";
+import { ArrowLeft, ArrowDownLeft, ArrowUpRight, Plus, X, ShieldAlert, Loader2 } from "lucide-react";
+import { C, font, radius } from "../core/theme";
 import { useApp } from "../store/AppStore";
-import { paypalConfigured, loadPayPalSdk, createOrder, captureOrder } from "../services/paypal";
+import { openCheckout, freemiusReady } from "../services/freemius";
 
-interface Props { onBack?: () => void; onOpenTrust: () => void; }
+interface Props { onBack?: () => void; onOpenTrust: () => void; desktop?: boolean; }
 
-const PRESETS = [10, 20, 50, 100];
+// Fixed top-up packs. Freemius (Merchant of Record) sells defined products, so
+// the wallet is funded by choosing a pack rather than typing an arbitrary amount.
+const PACKS = [5, 10, 20, 50];
 
 /**
- * Wallet — balance + top-up. Top-ups are paid via PayPal (real money): the
- * PayPal button creates + captures an order through the backend, and only on a
- * confirmed capture is the wallet credited.
+ * Wallet — balance + top-up. Top-ups are real money via the Freemius hosted
+ * checkout: the user picks a pack, pays on Freemius (card / PayPal on their
+ * side), and the wallet is credited SERVER-SIDE by the fulfilment webhook. We
+ * then poll the balance so it appears within a few seconds.
  */
-export function WalletScreen({ onBack, onOpenTrust }: Props) {
-  const { state, addBalance, showToast } = useApp();
+export function WalletScreen({ onBack, onOpenTrust, desktop }: Props) {
+  const { state, addBalance, showToast, syncBillingSoon } = useApp();
   const [sheet, setSheet] = useState(false);
-  const [amount, setAmount] = useState(20);
-  const amountRef = useRef(amount);
-  amountRef.current = amount;
+  const [busy, setBusy] = useState<number | null>(null); // amount currently checking out
   const unverified = state.numbers.filter((n) => n.verification !== "verified").length;
 
-  // Fallback used only when PayPal isn't configured (lets you test wallet logic).
-  const topUpSimulated = () => { addBalance(amount); setSheet(false); showToast(`$${amount}.00 added (test)`); };
-  const onPaid = (paid: number) => { addBalance(paid); setSheet(false); showToast(`$${paid.toFixed(2)} added to wallet`); };
+  // Fallback for local dev / mock (no Freemius configured): credit locally.
+  const topUpSimulated = (amount: number) => { addBalance(amount); setSheet(false); showToast(`$${amount.toFixed(2)} added (test)`); };
+
+  const topUp = async (amount: number) => {
+    if (!freemiusReady()) { topUpSimulated(amount); return; }
+    setBusy(amount);
+    try {
+      await openCheckout({ kind: "topup", amount }, { email: state.user?.email, name: state.user?.name });
+      setSheet(false);
+      showToast("Payment received — updating your balance…");
+      syncBillingSoon(); // webhook credits the wallet; poll it in
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Checkout failed";
+      if (msg !== "Checkout closed") showToast(msg, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <div style={{ background: C.bg, minHeight: "100%", paddingBottom: 24, position: "relative" }}>
@@ -80,33 +96,46 @@ export function WalletScreen({ onBack, onOpenTrust }: Props) {
         </div>
       </div>
 
-      {/* Top-up sheet */}
+      {/* Top-up sheet — pick a pack; pay on Freemius. Centered dialog on desktop,
+          bottom sheet on mobile. */}
       {sheet && (
-        <div onClick={(e) => e.target === e.currentTarget && setSheet(false)} style={{ position: "absolute", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-end" }}>
-          <div style={{ width: "100%", background: "#111829", borderRadius: "26px 26px 0 0", border: `1px solid ${C.line}`, padding: "8px 20px 28px" }}>
-            <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 14px" }}><div style={{ width: 38, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.18)" }} /></div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+        <div onClick={(e) => e.target === e.currentTarget && busy === null && setSheet(false)} style={{
+          position: desktop ? "fixed" : "absolute", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)",
+          display: "flex", alignItems: desktop ? "center" : "flex-end", justifyContent: "center",
+          padding: desktop ? 24 : 0,
+        }}>
+          <div style={{
+            width: desktop ? "min(460px, 96vw)" : "100%",
+            maxHeight: desktop ? "90vh" : "92%", overflowY: "auto",
+            background: C.card,
+            borderRadius: desktop ? 22 : "26px 26px 0 0",
+            border: `1px solid ${C.line}`, padding: desktop ? "22px 22px 26px" : "8px 20px 28px",
+          }}>
+            {!desktop && <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 14px" }}><div style={{ width: 38, height: 4, borderRadius: 2, background: C.line }} /></div>}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
               <h2 style={{ color: C.text, fontSize: 19, fontWeight: 800 }}>Top Up Wallet</h2>
-              <button onClick={() => setSheet(false)} style={{ width: 34, height: 34, borderRadius: 11, background: C.input, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><X size={16} color={C.muted} /></button>
+              <button onClick={() => busy === null && setSheet(false)} style={{ width: 34, height: 34, borderRadius: 11, background: C.input, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><X size={16} color={C.muted} /></button>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-              {PRESETS.map((p) => (
-                <button key={p} onClick={() => setAmount(p)} style={{
-                  padding: "16px", borderRadius: radius.md, cursor: "pointer", fontFamily: font.sans,
-                  background: amount === p ? "rgba(79,142,247,0.12)" : C.input,
-                  border: `1.5px solid ${amount === p ? C.blue : C.line}`,
-                  color: amount === p ? C.blue : C.text, fontSize: 18, fontWeight: 800,
-                }}>${p}</button>
-              ))}
+            <p style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>
+              Choose a top-up pack and pay securely with card{freemiusReady() ? "" : " (test mode)"}. Your balance updates as soon as the payment is confirmed.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {PACKS.map((p) => {
+                const isBusy = busy === p;
+                const disabled = busy !== null;
+                return (
+                  <button key={p} onClick={() => !disabled && topUp(p)} disabled={disabled} style={{
+                    padding: "22px 0", borderRadius: radius.md, cursor: disabled ? "not-allowed" : "pointer", fontFamily: font.sans,
+                    background: isBusy ? "rgba(79,142,247,0.12)" : C.input,
+                    border: `1.5px solid ${isBusy ? C.blue : C.line}`, opacity: disabled && !isBusy ? 0.5 : 1,
+                    color: C.text, fontSize: 22, fontWeight: 800,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  }}>
+                    {isBusy ? <><Loader2 size={18} className="dg-spin" color={C.blue} /> <span style={{ fontSize: 14, color: C.blue }}>Opening…</span></> : `$${p}`}
+                  </button>
+                );
+              })}
             </div>
-            {paypalConfigured() ? (
-              <>
-                <p style={{ color: C.muted, fontSize: 12, marginBottom: 12, textAlign: "center" }}>Pay <b style={{ color: C.text }}>${amount}.00</b> securely with PayPal to top up your wallet.</p>
-                <PayPalButton amountRef={amountRef} onSuccess={onPaid} onError={(m) => showToast(m, "error")} />
-              </>
-            ) : (
-              <button onClick={topUpSimulated} style={{ width: "100%", padding: "15px", borderRadius: radius.md, background: gradients.green, border: "none", color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: font.sans }}>Add ${amount}.00 (test)</button>
-            )}
           </div>
         </div>
       )}
@@ -115,49 +144,3 @@ export function WalletScreen({ onBack, onOpenTrust }: Props) {
 }
 
 const iconBtn: CSSProperties = { width: 36, height: 36, borderRadius: 11, background: C.input, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 };
-
-/**
- * Renders the PayPal Buttons. createOrder/onApprove call the backend so the
- * secret stays server-side; the wallet is credited only after a confirmed
- * capture. Reads the latest amount from a ref so the button needn't re-render.
- */
-function PayPalButton({ amountRef, onSuccess, onError }: {
-  amountRef: MutableRefObject<number>;
-  onSuccess: (amount: number) => void;
-  onError: (msg: string) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  // Keep latest callbacks in refs so the buttons render exactly once.
-  const successRef = useRef(onSuccess); successRef.current = onSuccess;
-  const errorRef = useRef(onError); errorRef.current = onError;
-
-  useEffect(() => {
-    let cancelled = false;
-    loadPayPalSdk()
-      .then((paypal: unknown) => {
-        if (cancelled || !containerRef.current) return;
-        const pp = paypal as { Buttons: (o: unknown) => { render: (el: HTMLElement) => void } };
-        setStatus("ready");
-        pp.Buttons({
-          style: { color: "gold", shape: "pill", height: 46, label: "paypal" },
-          createOrder: () => createOrder(amountRef.current),
-          onApprove: async (data: { orderID: string }) => {
-            try { successRef.current(await captureOrder(data.orderID)); }
-            catch (e) { errorRef.current(e instanceof Error ? e.message : "Payment failed"); }
-          },
-          onError: () => errorRef.current("PayPal error — try again"),
-        }).render(containerRef.current);
-      })
-      .catch(() => { if (!cancelled) setStatus("error"); });
-    return () => { cancelled = true; };
-  }, [amountRef]);
-
-  return (
-    <div>
-      <div ref={containerRef} />
-      {status === "loading" && <p style={{ color: C.muted, fontSize: 12.5, textAlign: "center" }}>Loading PayPal…</p>}
-      {status === "error" && <p style={{ color: C.red, fontSize: 12.5, textAlign: "center" }}>Couldn't load PayPal. Check your connection / client id.</p>}
-    </div>
-  );
-}

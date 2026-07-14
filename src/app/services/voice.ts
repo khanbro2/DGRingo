@@ -1,0 +1,291 @@
+/**
+ * Browser softphone — real two-way audio via the Telnyx WebRTC SDK.
+ *
+ * Login uses an EPHEMERAL JWT minted by our backend (`POST /api/telnyx/rtc-token`)
+ * from a Credential Connection, so the SIP password never reaches the browser.
+ * The remote audio is attached to a hidden <audio id="dg-remote-audio"> that the
+ * app renders once at the root.
+ *
+ * The client REGISTERS in the background as soon as the user is signed in
+ * (`register()`), so inbound calls to their number ring the app even when no
+ * call is in progress. `startCall()` places outbound calls on the same client.
+ *
+ * In "mock" mode there's no SDK/network — call state is simulated so the in-call
+ * UI is fully demoable offline (incl. a dev hook to preview an incoming call).
+ */
+import { TelnyxRTC } from "@telnyx/webrtc";
+import { getToken } from "./api";
+import { API_BASE, TELNYX_MODE } from "./telnyx/config";
+
+const live = TELNYX_MODE === "live";
+export const REMOTE_AUDIO_ID = "dg-remote-audio";
+
+export type CallPhase = "incoming" | "connecting" | "ringing" | "active" | "ended" | "failed";
+export type CallQuality = "excellent" | "good" | "fair" | "poor" | "unknown";
+export type CallDir = "inbound" | "outbound";
+
+export interface CallSnapshot {
+  phase: CallPhase;
+  direction: CallDir;
+  contact: string;
+  callerNumber: string | null;
+  muted: boolean;
+  quality: CallQuality;
+  /** epoch ms when the call became active (for the timer) */
+  startedAt: number | null;
+  error?: string;
+}
+
+type Listener = (s: CallSnapshot | null) => void;
+
+let snap: CallSnapshot | null = null;
+const listeners = new Set<Listener>();
+
+function notify() { listeners.forEach((fn) => fn(snap)); }
+function pushSnap(s: CallSnapshot) { snap = s; notify(); }
+function emit(patch: Partial<CallSnapshot>) {
+  if (!snap) return;
+  snap = { ...snap, ...patch };
+  notify();
+}
+
+export function subscribeCall(fn: Listener): () => void {
+  listeners.add(fn);
+  fn(snap);
+  return () => { listeners.delete(fn); };
+}
+export function currentCall(): CallSnapshot | null { return snap; }
+
+/* ------------------------------------------------------------------ live SDK */
+type AnyCall = {
+  id: string;
+  state: string;
+  direction: string;
+  options?: { remoteCallerNumber?: string; remoteCallerName?: string };
+  answer: () => void;
+  hangup: () => void;
+  muteAudio: () => void;
+  unmuteAudio: () => void;
+  peer?: { instance?: RTCPeerConnection };
+};
+let client: InstanceType<typeof TelnyxRTC> | null = null;
+let registered = false;
+let readyPromise: Promise<void> | null = null;
+let call: AnyCall | null = null;
+let myCaller: string | null = null;
+let myName: string | null = null;
+let statsTimer: ReturnType<typeof setInterval> | null = null;
+let mockTimers: ReturnType<typeof setTimeout>[] = [];
+let lastStats: { lost: number; recv: number } | null = null;
+
+// Fetch the connection's STATIC SIP credentials (username/password). We log in
+// with these — not an on-demand token — so the client also RECEIVES inbound
+// calls (Telnyx on-demand credentials are outbound-only).
+async function fetchCreds(): Promise<{ loginToken: string | null; login: string | null; password: string | null; callerNumber: string | null; callerName: string | null }> {
+  const t = getToken();
+  const r = await fetch(`${API_BASE}/rtc-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+  });
+  const j = await r.json().catch(() => ({}));
+  // Prefer a per-user login token (unique SIP identity); fall back to the shared
+  // static credential if the server returned login/password instead.
+  if (!r.ok || (!j.loginToken && !(j.login && j.password))) throw new Error(j.error || "Could not start voice session");
+  return { loginToken: j.loginToken ?? null, login: j.login ?? null, password: j.password ?? null, callerNumber: j.callerNumber ?? null, callerName: j.callerName ?? null };
+}
+
+/** Connect + register the WebRTC client once; resolves when ready to call/receive. */
+function ensureClient(): Promise<void> {
+  if (!live) return Promise.resolve();
+  if (registered && client) return Promise.resolve();
+  if (readyPromise) return readyPromise;
+  readyPromise = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Voice service timed out — check your connection.")), 15000);
+    (async () => {
+      try {
+        const { loginToken, login, password, callerNumber, callerName } = await fetchCreds();
+        myCaller = callerNumber; myName = callerName;
+        client = new TelnyxRTC(loginToken ? { login_token: loginToken } : { login: login!, password: password! });
+        client.remoteElement = REMOTE_AUDIO_ID;
+        client.on("telnyx.ready", () => { registered = true; clearTimeout(timeout); console.info("[voice] registered (ready for inbound + outbound)"); resolve(); });
+        client.on("telnyx.notification", onNotification);
+        client.on("telnyx.socket.close", () => { console.warn("[voice] socket closed"); registered = false; });
+        client.on("telnyx.error", (e: unknown) => {
+          const msg = (e as { error?: { message?: string } })?.error?.message || "Voice connection error";
+          console.warn("[voice] error:", msg);
+          clearTimeout(timeout);
+          if (snap && snap.phase !== "ended") { endCall(); emit({ phase: "failed", error: msg }); }
+          reject(new Error(msg));
+        });
+        client.connect();
+      } catch (e) { clearTimeout(timeout); reject(e); }
+    })();
+  });
+  readyPromise.catch(() => { readyPromise = null; registered = false; });
+  return readyPromise;
+}
+
+function onNotification(n: { type?: string; call?: AnyCall }) {
+  if (n?.type === "userMediaError") {
+    endCall();
+    emit({ phase: "failed", error: "Microphone blocked — allow mic access and try again." });
+    return;
+  }
+  if (n?.type !== "callUpdate" || !n.call) return;
+  const c = n.call;
+
+  console.info("[voice] callUpdate:", c.direction, c.state);
+  // Brand-new INBOUND call (we have no active call) → ring the incoming UI.
+  if (!call && c.direction === "inbound" && (c.state === "ringing" || c.state === "new")) {
+    call = c;
+    pushSnap({
+      phase: "incoming", direction: "inbound",
+      contact: c.options?.remoteCallerNumber || "Unknown caller",
+      callerNumber: myCaller, muted: false, quality: "unknown", startedAt: null,
+    });
+    return;
+  }
+  // Update for the call we're tracking.
+  if (call && c.id === call.id) applyState(c.state);
+}
+
+/** Map the SDK's Verto call state to our phases. */
+function applyState(state: string) {
+  if (!snap || snap.phase === "ended" || snap.phase === "failed") return;
+  switch (state) {
+    case "ringing":
+    case "early":
+      if (snap.direction === "outbound") emit({ phase: "ringing" });
+      break;
+    case "active":
+      emit({ phase: "active", startedAt: snap.startedAt ?? Date.now() });
+      startStatsPolling();
+      break;
+    case "hangup":
+    case "destroy":
+    case "purge":
+      endCall();
+      emit({ phase: "ended" });
+      break;
+    default:
+      if (snap.phase === "connecting" && snap.direction === "outbound") emit({ phase: "connecting" });
+  }
+}
+
+function startStatsPolling() {
+  if (statsTimer || !live) return;
+  statsTimer = setInterval(async () => {
+    try {
+      const pc = call?.peer?.instance;
+      if (!pc) return;
+      const reports = await pc.getStats();
+      let lost = 0, recv = 0, jitter = 0;
+      reports.forEach((rep: { type?: string; packetsLost?: number; packetsReceived?: number; jitter?: number }) => {
+        if (rep.type === "inbound-rtp") {
+          lost += rep.packetsLost ?? 0;
+          recv += rep.packetsReceived ?? 0;
+          if (typeof rep.jitter === "number") jitter = rep.jitter;
+        }
+      });
+      const dLost = lastStats ? lost - lastStats.lost : lost;
+      const dRecv = lastStats ? recv - lastStats.recv : recv;
+      lastStats = { lost, recv };
+      const ratio = dRecv > 0 ? dLost / (dLost + dRecv) : 0;
+      let quality: CallQuality = "excellent";
+      if (ratio > 0.08 || jitter > 0.06) quality = "poor";
+      else if (ratio > 0.03 || jitter > 0.03) quality = "fair";
+      else if (ratio > 0.01) quality = "good";
+      emit({ quality });
+    } catch { /* stats not accessible */ }
+  }, 2500);
+}
+
+/** Clear the CURRENT call but keep the client registered for future inbound. */
+function endCall() {
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  mockTimers.forEach(clearTimeout); mockTimers = [];
+  lastStats = null;
+  call = null;
+}
+
+/* -------------------------------------------------------------------- public */
+
+/** Register in the background so inbound calls ring the app. Call after login. */
+export function register() {
+  if (!live) return;
+  console.info("[voice] register() — connecting for inbound…");
+  ensureClient().catch((e) => { console.warn("[voice] register failed:", e?.message); });
+}
+
+/** Tear down the client entirely (e.g. on logout). */
+export function unregister() {
+  endCall();
+  try { if (client) client.disconnect(); } catch { /* ignore */ }
+  client = null; registered = false; readyPromise = null; snap = null; notify();
+}
+
+/** Start an outbound call to `destination`. */
+export async function startCall(destination: string, callerNumber: string | null = null) {
+  endCall();
+  pushSnap({
+    phase: "connecting", direction: "outbound", contact: destination,
+    callerNumber: callerNumber || myCaller, muted: false,
+    quality: live ? "unknown" : "excellent", startedAt: null,
+  });
+
+  if (!live) {
+    mockTimers.push(setTimeout(() => emit({ phase: "ringing" }), 700));
+    mockTimers.push(setTimeout(() => emit({ phase: "active", startedAt: Date.now() }), 2100));
+    return;
+  }
+
+  try {
+    await ensureClient();
+    if (!snap || snap.phase === "ended") return; // hung up while connecting
+    const caller = callerNumber || myCaller;
+    emit({ callerNumber: caller });
+    call = client!.newCall({
+      destinationNumber: destination,
+      callerNumber: caller || undefined,
+      callerName: myName || "DGRINGO",
+      audio: true, video: false,
+      remoteElement: REMOTE_AUDIO_ID,
+    }) as unknown as AnyCall;
+  } catch (e) {
+    endCall();
+    emit({ phase: "failed", error: e instanceof Error ? e.message : "Could not place the call" });
+  }
+}
+
+/** Answer the ringing inbound call. */
+export function answerCall() {
+  try {
+    if (live && call) call.answer();
+    else if (!live && snap?.phase === "incoming") emit({ phase: "active", startedAt: Date.now() });
+  } catch { /* ignore */ }
+}
+
+export function hangupCall() {
+  try { if (live && call) call.hangup(); } catch { /* ignore */ }
+  const wasIncoming = snap?.phase === "incoming";
+  endCall();
+  if (snap && snap.phase !== "failed") emit({ phase: "ended", startedAt: wasIncoming ? null : snap.startedAt });
+}
+
+export function toggleMute(): boolean {
+  if (!snap) return false;
+  const next = !snap.muted;
+  try { if (live && call) { next ? call.muteAudio() : call.unmuteAudio(); } } catch { /* ignore */ }
+  emit({ muted: next });
+  return next;
+}
+
+/** Dismiss the ended/failed overlay. */
+export function clearCall() { endCall(); snap = null; notify(); }
+
+// Dev-only: preview the incoming-call UI in mock mode (window.__dgIncoming()).
+if (!live && typeof window !== "undefined") {
+  (window as unknown as { __dgIncoming?: (from?: string) => void }).__dgIncoming = (from = "+1 (415) 555-7788") => {
+    pushSnap({ phase: "incoming", direction: "inbound", contact: from, callerNumber: "+14155550182", muted: false, quality: "unknown", startedAt: null });
+  };
+}

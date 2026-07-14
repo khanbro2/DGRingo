@@ -14,8 +14,19 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Apply saved theme before first paint to avoid a flash of the wrong theme.
+      // Default is LIGHT.
+      try {
+        var t = localStorage.getItem("dg-theme");
+        document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "light");
+      }
+    </script>
     <style>
-      html, body { margin: 0; background: #05070d; }
+      html, body { margin: 0; background: #ffffff; }
+      html[data-theme="dark"], html[data-theme="dark"] body { background: #05070d; }
       #root { min-height: 100%; }
     </style>
   </head>

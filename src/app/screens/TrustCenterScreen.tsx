@@ -1,21 +1,48 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { ArrowLeft, ShieldCheck, Info } from "lucide-react";
 import { C, gradients, font, radius } from "../core/theme";
 import { useApp } from "../store/AppStore";
+import type { PhoneNumber } from "../core/types";
+import { BrandForm, CampaignForm, RegulatoryDocsForm } from "./VerificationForms";
 
 interface Props { onBack: () => void; }
+
+type Form =
+  | { kind: "brand" }
+  | { kind: "campaign"; numberId: string }
+  | { kind: "docs"; numberId: string; phoneNumber: string };
 
 /**
  * Trust center — the verification flow. Carriers require VoIP numbers to be
  * registered before they can send SMS; unregistered numbers are gated from
  * sending (enforced in the store's sendMessage).
+ *
+ * Two verification paths, chosen by the number's country:
+ *  • US/Canada (+1) → 10DLC: register a business BRAND, then a CAMPAIGN, then
+ *    attach the number. No documents — Telnyx validates the EIN automatically.
+ *  • Other countries → REGULATORY documents: upload proof of ID / address.
+ * Everything happens in-app (no Telnyx popup); the store submits to Telnyx.
  */
 export function TrustCenterScreen({ onBack }: Props) {
-  const { state, registerNumber, registerBrand, showToast, telnyxMode } = useApp();
+  const { state, registerNumber, showToast } = useApp();
+  const [form, setForm] = useState<Form | null>(null);
   const pending = state.numbers.filter((n) => n.verification !== "verified");
   const verified = state.numbers.filter((n) => n.verification === "verified");
   const brand = state.brand;
   const brandOk = brand?.status === "VERIFIED";
+
+  const isNanp = (n: PhoneNumber) => n.number.replace(/\D/g, "").startsWith("1");
+
+  // Pick the right flow for a number when "Register now" is tapped.
+  const onRegister = (n: PhoneNumber) => {
+    if (isNanp(n)) {
+      if (!brandOk) { showToast("Register your business brand first", "error"); return; }
+      if (brand?.campaignId) registerNumber(n.id);            // campaign exists → just attach
+      else setForm({ kind: "campaign", numberId: n.id });     // first number → campaign form
+    } else {
+      setForm({ kind: "docs", numberId: n.id, phoneNumber: n.number });
+    }
+  };
 
   return (
     <div style={{ background: C.bg, minHeight: "100%", paddingBottom: 28 }}>
@@ -41,7 +68,7 @@ export function TrustCenterScreen({ onBack }: Props) {
             <p style={{ color: C.text, fontSize: 14, fontWeight: 700 }}>{brand ? brand.displayName : "Brand not registered"}</p>
             <p style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{brand ? `Status: ${brand.status}` : "Register your business brand to start"}</p>
           </div>
-          {!brandOk && <button onClick={() => registerBrand()} style={{ padding: "9px 14px", borderRadius: 11, background: gradients.brand, border: "none", color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>Register brand</button>}
+          {!brandOk && <button onClick={() => setForm({ kind: "brand" })} style={{ padding: "9px 14px", borderRadius: 11, background: gradients.brand, border: "none", color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{brand ? "Continue" : "Register brand"}</button>}
         </div>
       </div>
 
@@ -69,7 +96,7 @@ export function TrustCenterScreen({ onBack }: Props) {
                     </p>
                   </div>
                 </div>
-                <button onClick={() => registerNumber(n.id)} style={{
+                <button onClick={() => onRegister(n)} style={{
                   width: "100%", padding: "13px", borderRadius: radius.md, background: gradients.brand,
                   border: "none", color: "#fff", fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: font.sans,
                   marginBottom: 8,
@@ -106,6 +133,11 @@ export function TrustCenterScreen({ onBack }: Props) {
           Registration is a one-time carrier requirement (10DLC). Until a number is registered, outbound SMS on that number is blocked.
         </p>
       </div>
+
+      {/* Verification forms (in-app — no Telnyx popup) */}
+      {form?.kind === "brand" && <BrandForm onClose={() => setForm(null)} />}
+      {form?.kind === "campaign" && <CampaignForm numberId={form.numberId} onClose={() => setForm(null)} />}
+      {form?.kind === "docs" && <RegulatoryDocsForm numberId={form.numberId} phoneNumber={form.phoneNumber} onClose={() => setForm(null)} />}
     </div>
   );
 }

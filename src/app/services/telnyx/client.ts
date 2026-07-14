@@ -16,6 +16,17 @@ export class TelnyxError extends Error {
 
 type Query = Record<string, string | number | boolean | string[] | undefined>;
 
+/** The signed-in user's token — the proxy requires it so only authenticated
+ *  users can use the platform's telephony (prevents anonymous abuse). */
+const authHeader = (): Record<string, string> => {
+  try {
+    const t = localStorage.getItem("dg-token") || localStorage.getItem("dg-admin-token");
+    return t ? { Authorization: `Bearer ${t}` } : {};
+  } catch {
+    return {};
+  }
+};
+
 function toSearch(query?: Query): string {
   if (!query) return "";
   const p = new URLSearchParams();
@@ -35,7 +46,7 @@ export async function http<T>(
   const { method = "GET", query, body } = opts;
   const res = await fetch(`${API_BASE}${path}${toSearch(query)}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const json = await res.json().catch(() => ({}));

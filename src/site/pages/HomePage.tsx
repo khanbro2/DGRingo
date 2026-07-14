@@ -11,6 +11,9 @@ import {
 } from "lucide-react";
 import { Reveal } from "../components/Reveal";
 import { PhoneFrame } from "../components/PhoneFrame";
+import { HeroPhones } from "../components/HeroPhones";
+import { PixelRipple } from "../components/PixelRipple";
+import { CountUpStat } from "../components/CountUpStat";
 import { LinkButton, SectionIntro } from "../components/ui";
 import { Link } from "../router";
 import { COUNTRIES, STATS, FEATURES, STEPS, SHOTS } from "../data";
@@ -21,59 +24,59 @@ export function HomePage() {
   return (
     <>
       {/* ---------------------------------------------------------------- HERO */}
-      <section className="dg-section" style={{ paddingTop: "calc(var(--nav-h) + clamp(48px, 9vw, 110px))" }}>
-        <div className="dg-wrap">
-          <div className="dg-hero-grid">
-            <div>
-              <Reveal>
-                <span className="dg-eyebrow">
-                  <Star size={13} fill="currentColor" /> Your number. Anywhere on Earth.
-                </span>
-              </Reveal>
-              <Reveal delay={80}>
-                <h1 className="dg-h1" style={{ marginTop: 26 }}>
-                  A second phone number for a <span className="dg-grad-text">borderless world</span>.
-                </h1>
-              </Reveal>
-              <Reveal delay={160}>
-                <p className="dg-lead" style={{ marginTop: 24, maxWidth: 520 }}>
-                  Get real local numbers in 8+ countries. Call, text and manage everything from one
-                  beautifully simple app — no SIM, no contract, no second phone.
-                </p>
-              </Reveal>
-              <Reveal delay={240}>
-                <div style={{ display: "flex", gap: 12, marginTop: 34, flexWrap: "wrap" }}>
-                  <LinkButton to="/signup" variant="primary" size="lg">
-                    Get started free <ArrowRight size={17} />
-                  </LinkButton>
-                  <LinkButton to="/pricing" variant="ghost" size="lg">
-                    See pricing
-                  </LinkButton>
-                </div>
-              </Reveal>
-              <Reveal delay={320}>
-                <div style={{ display: "flex", gap: 22, marginTop: 30, flexWrap: "wrap" }}>
-                  {["No SIM required", "Cancel anytime", "Live in 60 seconds"].map((t) => (
-                    <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13.5, color: "var(--muted)" }}>
-                      <Check size={15} color="var(--green)" /> {t}
-                    </span>
-                  ))}
-                </div>
-              </Reveal>
+      <section
+        className="dg-hero-ripple"
+        style={{
+          position: "relative",
+          overflow: "hidden",
+          textAlign: "center",
+          paddingTop: "calc(var(--nav-h) + clamp(72px, 12vw, 150px))",
+          paddingBottom: "clamp(56px, 9vw, 120px)",
+        }}
+      >
+        <PixelRipple />
+        <div className="dg-wrap" style={{ position: "relative", zIndex: 1 }}>
+          <Reveal>
+            <span className="dg-eyebrow">
+              <Star size={13} fill="currentColor" /> Your number. Anywhere on Earth.
+            </span>
+          </Reveal>
+          <Reveal delay={90}>
+            <h1 className="dg-h1" style={{ marginTop: 26, maxWidth: 1000, marginLeft: "auto", marginRight: "auto" }}>
+              Borderless.<br />
+              <span className="dg-grad-text">Effortless.</span>
+            </h1>
+          </Reveal>
+          <Reveal delay={170}>
+            <p className="dg-lead" style={{ marginTop: 24, maxWidth: 600, marginLeft: "auto", marginRight: "auto" }}>
+              One app for every number — call, text and manage real local lines in 8+ countries.
+              No SIM, no contract, no second phone.
+            </p>
+          </Reveal>
+          <Reveal delay={250}>
+            <div style={{ display: "flex", gap: 12, marginTop: 36, flexWrap: "wrap", justifyContent: "center" }}>
+              <LinkButton to="/signup" variant="primary" size="lg">
+                Get started free <ArrowRight size={17} />
+              </LinkButton>
+              <LinkButton to="/pricing" variant="ghost" size="lg">
+                See pricing
+              </LinkButton>
             </div>
-
-            <Reveal delay={200}>
-              <div className="dg-hero-phones" style={{ display: "flex", justifyContent: "center", gap: 18, position: "relative" }}>
-                <PhoneFrame src={SHOTS.home} caption="Home" style={{ transform: "translateY(18px) rotate(-4deg)" }} />
-                <PhoneFrame src={SHOTS.chat} caption="Messages" style={{ transform: "translateY(-18px) rotate(4deg)" }} glow={false} />
-              </div>
-            </Reveal>
-          </div>
+          </Reveal>
+          <Reveal delay={330}>
+            <div style={{ display: "flex", gap: 22, marginTop: 30, flexWrap: "wrap", justifyContent: "center" }}>
+              {["No SIM required", "Cancel anytime", "Live in 60 seconds"].map((t) => (
+                <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13.5, color: "var(--muted)" }}>
+                  <Check size={15} color="var(--green)" /> {t}
+                </span>
+              ))}
+            </div>
+          </Reveal>
         </div>
       </section>
 
       {/* ----------------------------------------------------- COUNTRY MARQUEE */}
-      <section style={{ padding: "8px 0 40px" }}>
+      <section style={{ padding: "8px 0 36px" }}>
         <div className="dg-wrap">
           <Reveal>
             <p className="dg-center dg-muted" style={{ fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 22 }}>
@@ -92,6 +95,13 @@ export function HomePage() {
         </div>
       </section>
 
+      {/* ------------------------------------------------------ PRODUCT PREVIEW */}
+      <section className="dg-section" style={{ paddingTop: 24, paddingBottom: 24 }}>
+        <div className="dg-wrap">
+          <HeroPhones />
+        </div>
+      </section>
+
       {/* -------------------------------------------------------------- STATS */}
       <section className="dg-section" style={{ paddingTop: 60, paddingBottom: 60 }}>
         <div className="dg-wrap">
@@ -99,7 +109,7 @@ export function HomePage() {
             {STATS.map((s, i) => (
               <Reveal key={s.label} delay={i * 80}>
                 <div className="dg-card dg-center" style={{ padding: "30px 18px" }}>
-                  <div className="dg-stat-num grad">{s.num}</div>
+                  <CountUpStat value={s.num} className="dg-stat-num grad" />
                   <p className="dg-muted" style={{ fontSize: 13.5, marginTop: 8 }}>{s.label}</p>
                 </div>
               </Reveal>

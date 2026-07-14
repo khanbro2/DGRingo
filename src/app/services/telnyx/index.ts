@@ -3,17 +3,36 @@
  * returns realistic data with no backend; in "live" mode it calls your
  * backend proxy (which injects the secret key) using the real Telnyx paths.
  */
-import { TELNYX_MODE, DEFAULT_MESSAGING_PROFILE_ID, DEFAULT_CONNECTION_ID } from "./config";
+import { TELNYX_MODE, DEFAULT_MESSAGING_PROFILE_ID, DEFAULT_CONNECTION_ID, API_BASE } from "./config";
 import { http } from "./client";
 import { mock } from "./mock";
 import type {
   AvailablePhoneNumber, NumberOrder, PhoneNumberDetailed, Message,
-  Brand, Campaign, PhoneNumberCampaign, Call, Balance,
+  Brand, BrandStatus, Campaign, PhoneNumberCampaign, Call, Balance,
   ConversationThread, MessagingProfile, DetailRecord, MessageStatus,
   TList, TSingle,
 } from "./types";
+import type { BrandRegistration, CampaignRegistration, RegulatoryRequirement } from "../../core/types";
 
 const live = TELNYX_MODE === "live";
+
+/** Strip formatting so a phone is strict +E.164 (Telnyx rejects "+1 555 123 4567"). */
+const toE164 = (s: string): string => {
+  const d = (s || "").replace(/[^\d+]/g, "");
+  return d.startsWith("+") ? d : `+${d}`;
+};
+
+/** Map Telnyx's raw brand status ("OK", "REGISTRATION_PENDING", …) onto the app's
+ *  normalized BrandStatus. Telnyx uses "OK" for a registered brand — the app was
+ *  checking for "VERIFIED" and so never unlocked the next step. */
+const mapBrandStatus = (s: string | undefined, identity?: string): BrandStatus => {
+  const v = String(s || "").toUpperCase();
+  const id = String(identity || "").toUpperCase();
+  if (v === "OK" || v === "VERIFIED" || id === "VERIFIED" || id === "VETTED_VERIFIED") return "VERIFIED";
+  if (v.includes("PENDING")) return "PENDING";
+  if (v.includes("FAIL")) return "FAILED";
+  return "UNVERIFIED";
+};
 
 export interface SearchFilter {
   country_code?: string;
@@ -103,19 +122,42 @@ export const telnyx = {
   async getBrand(): Promise<Brand | null> {
     if (!live) return mock.getBrand();
     const r = await http<TList<Brand>>("/10dlc/brand");
-    return r.data[0] ?? null;
+    const b = r.data[0];
+    if (!b) return null;
+    return { ...b, status: mapBrandStatus(b.status, (b as { identityStatus?: string }).identityStatus) };
   },
-  async registerBrand(displayName: string, companyName: string): Promise<Brand> {
-    if (!live) return mock.registerBrand(displayName);
+  // Register the 10DLC brand from the full business profile (A2P "KYC"). Telnyx
+  // validates the EIN / registration number against business records — there is
+  // no document upload for 10DLC.
+  async registerBrand(data: BrandRegistration): Promise<Brand> {
+    if (!live) return mock.registerBrand(data.displayName, data.entityType);
     const r = await http<TSingle<Brand>>("/10dlc/brand", { method: "POST", body: {
-      displayName, companyName, entityType: "PRIVATE_PROFIT", country: "US",
+      entityType: data.entityType,
+      displayName: data.displayName,
+      companyName: data.companyName,
+      ein: data.ein,
+      vertical: data.vertical,
+      email: data.email,
+      phone: toE164(data.phone), // Telnyx requires strict +E.164 (no spaces/dashes)
+      website: data.website || undefined,
+      street: data.street,
+      city: data.city,
+      state: data.state,
+      postalCode: data.postalCode,
+      country: data.country,
     }});
-    return r.data;
+    return { ...r.data, status: mapBrandStatus(r.data.status, (r.data as { identityStatus?: string }).identityStatus) };
   },
-  async createCampaign(brandId: string, usecase = "MIXED"): Promise<Campaign> {
-    if (!live) return mock.createCampaign(usecase);
+  async createCampaign(brandId: string, data: CampaignRegistration): Promise<Campaign> {
+    if (!live) return mock.createCampaign(data.usecase);
     const r = await http<TSingle<Campaign>>("/10dlc/campaignBuilder", { method: "POST", body: {
-      brandId, usecase, description: "DGRINGO transactional & customer messaging",
+      brandId,
+      usecase: data.usecase,
+      description: data.description,
+      messageFlow: data.messageFlow,
+      sample1: data.sample1,
+      sample2: data.sample2,
+      subscriberOptin: true, subscriberOptout: true, subscriberHelp: true,
     }});
     return r.data;
   },
@@ -125,6 +167,45 @@ export const telnyx = {
       phoneNumber, campaignId,
     }});
     return r.data;
+  },
+
+  /** Mark a conversation thread's inbound messages as read (server-side). */
+  async markConversationRead(owned: string, contact: string): Promise<void> {
+    if (!live) return;
+    await http("/messaging/read", { method: "POST", body: { owned, contact } });
+  },
+
+  /* §7 number regulatory requirements (KYC documents for some countries) */
+  async getNumberRequirements(phoneNumber: string): Promise<RegulatoryRequirement[]> {
+    if (!live) return mock.getNumberRequirements(phoneNumber);
+    // Telnyx returns the document/address/field requirements for this number's
+    // country + type; we adapt the raw records into a tidy checklist.
+    const r = await http<TList<Record<string, unknown>>>(
+      `/phone_number_regulatory_requirements?filter[phone_number]=${encodeURIComponent(phoneNumber)}`
+    );
+    const reqs = (r.data?.[0]?.regulatory_requirements as Record<string, unknown>[]) ?? [];
+    return reqs.map((q, i) => ({
+      id: String(q.field_type ?? q.requirement_id ?? i),
+      name: String(q.label ?? q.name ?? "Requirement"),
+      description: String(q.description ?? ""),
+      type: (q.field_type === "document" ? "document" : q.field_type === "address" ? "address" : "field") as RegulatoryRequirement["type"],
+      required: true,
+    }));
+  },
+  // Upload a regulatory document for a number. The raw file bytes are POSTed to
+  // our backend (/api/telnyx/documents), which wraps them in multipart and
+  // forwards to Telnyx /documents with the secret key, returning the document id.
+  async submitRegulatoryDoc(phoneNumber: string, requirementId: string, file: File): Promise<{ ok: boolean; documentId?: string }> {
+    if (!live) return mock.submitRegulatoryDoc(phoneNumber, requirementId, file.name);
+    const token = (() => { try { return localStorage.getItem("dg-token"); } catch { return null; } })();
+    const r = await fetch(`${API_BASE}/documents?filename=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: file,
+    });
+    const j = await r.json().catch(() => ({} as Record<string, unknown>));
+    if (!r.ok) throw new Error((j as { errors?: { detail?: string }[] }).errors?.[0]?.detail || "Document upload failed");
+    return { ok: true, documentId: (j as { data?: { id?: string } }).data?.id };
   },
 
   /* §8 place a call */

@@ -66,11 +66,41 @@ export function toAppNumber(
   };
 }
 
+const digits = (s: string) => s.replace(/\D/g, "");
+
+// Dial-code → ISO, most-specific first ("1" last so +44/+49/… win over +1).
+const DIAL_ISO: Array<[string, string]> = [
+  ["44", "GB"], ["49", "DE"], ["33", "FR"], ["81", "JP"], ["61", "AU"], ["55", "BR"], ["1", "US"],
+];
+
+/**
+ * Build an app PhoneNumber from a DB-owned number (GET /api/numbers) — the
+ * user's OWN numbers, not the shared Telnyx account list. Uses the Telnyx id so
+ * conversation/call matching (keyed by phone_number_id) still lines up.
+ */
+export function ownedToAppNumber(
+  n: { id: string; e164: string; kind: string; telnyxId: string; free: boolean },
+  prev?: PhoneNumber,
+): PhoneNumber {
+  const d = digits(n.e164);
+  const iso = DIAL_ISO.find(([code]) => d.startsWith(code))?.[1] ?? "US";
+  const c = COUNTRY[iso] ?? fallback;
+  return {
+    id: n.telnyxId || n.id,
+    flag: prev?.flag ?? c.flag,
+    number: prev?.number ?? formatE164(n.e164),
+    country: prev?.country ?? c.name,
+    sms: prev?.sms ?? true,
+    voice: prev?.voice ?? true,
+    price: prev?.price ?? 0,
+    verification: prev?.verification ?? "unverified",
+    settings: prev?.settings ?? defaultSettings(n.kind === "tollfree" ? "Toll-free" : "New Number"),
+  };
+}
+
 export function balanceToNumber(b: Balance): number {
   return parseFloat(b.balance) || 0;
 }
-
-const digits = (s: string) => s.replace(/\D/g, "");
 
 const FLAG_BY_DIAL: Array<[string, string]> = [
   ["44", "🇬🇧"], ["49", "🇩🇪"], ["33", "🇫🇷"], ["81", "🇯🇵"], ["61", "🇦🇺"], ["1", "🇺🇸"],

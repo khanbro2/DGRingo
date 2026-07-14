@@ -1,14 +1,28 @@
 import { useEffect, useState } from "react";
-import { Menu, X } from "lucide-react";
+import { motion } from "motion/react";
+import { Menu, X, Sun, Moon } from "lucide-react";
 import { Link, useRouter } from "../router";
 import { Logo, LinkButton } from "./ui";
 import { NAV } from "../data";
+import { useTheme } from "../theme";
 
 /** Frosted, Apple-style top bar that gains a blur background once you scroll. */
 export function Nav() {
   const { route } = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
+  const [theme, toggleTheme] = useTheme();
+
+  const ThemeToggle = (
+    <button
+      className="dg-icon-btn"
+      onClick={toggleTheme}
+      aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+      title={theme === "dark" ? "Light mode" : "Dark mode"}
+    >
+      {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+    </button>
+  );
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
@@ -23,7 +37,12 @@ export function Nav() {
 
   return (
     <>
-      <nav className={`dg-nav ${scrolled ? "scrolled" : ""}`}>
+      <motion.nav
+        className={`dg-nav ${scrolled ? "scrolled" : ""}`}
+        initial={{ y: -80 }}
+        animate={{ y: 0 }}
+        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+      >
         <div className="dg-nav-inner">
           <Logo />
           <div className="dg-nav-links">
@@ -34,6 +53,7 @@ export function Nav() {
             ))}
           </div>
           <div className="dg-nav-cta">
+            {ThemeToggle}
             <Link to="/login" className="dg-nav-link dg-hide-sm">
               Log in
             </Link>
@@ -45,14 +65,17 @@ export function Nav() {
             </button>
           </div>
         </div>
-      </nav>
+      </motion.nav>
 
       <div className={`dg-drawer ${open ? "open" : ""}`}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
           <Logo />
-          <button className="dg-burger" onClick={() => setOpen(false)} aria-label="Close menu">
-            <X size={20} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {ThemeToggle}
+            <button className="dg-burger" onClick={() => setOpen(false)} aria-label="Close menu">
+              <X size={20} />
+            </button>
+          </div>
         </div>
         {NAV.map((n) => (
           <Link key={n.to} to={n.to} onClick={() => setOpen(false)}>

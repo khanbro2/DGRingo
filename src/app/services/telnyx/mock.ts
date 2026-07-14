@@ -144,6 +144,22 @@ export const mock = {
     return wait({ phoneNumber, campaignId: campaign.campaignId, status: "ASSIGNED" });
   },
 
+  /* §7 number regulatory requirements (mock: US/CA need nothing, others need docs) */
+  async getNumberRequirements(phoneNumber: string) {
+    const d = (phoneNumber || "").replace(/\D/g, "");
+    const isNanp = d.startsWith("1");
+    if (isNanp) return wait([], 200);
+    return wait([
+      { id: "proof_of_id", name: "Proof of identity", description: "Government-issued ID (passport or national ID).", type: "document" as const, required: true },
+      { id: "proof_of_address", name: "Proof of address", description: "Utility bill or bank statement (last 3 months).", type: "document" as const, required: true },
+      { id: "local_address", name: "Local address", description: "A registered address in the number's country.", type: "address" as const, required: true },
+    ], 250);
+  },
+  async submitRegulatoryDoc(phoneNumber: string, requirementId: string, fileName: string) {
+    void phoneNumber; void requirementId; void fileName;
+    return wait({ ok: true }, 400);
+  },
+
   /* §7 Verify (OTP) */
   async createVerification(phone_number: string): Promise<Verification> {
     return wait({ id: id("ver"), phone_number, type: "sms", verify_profile_id: "vp_mock", status: "pending" });

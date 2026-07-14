@@ -153,9 +153,9 @@ export function InboxScreen() {
       {/* Inboxes switcher drawer */}
       {showSwitcher && (
         <div onClick={(e) => e.target === e.currentTarget && setShowSwitcher(false)} style={{ position: "absolute", inset: 0, zIndex: 80, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(5px)", display: "flex", alignItems: "flex-end" }}>
-          <div style={{ width: "100%", background: "#111829", borderRadius: "26px 26px 0 0", border: `1px solid ${C.line}`, maxHeight: "82%", overflowY: "auto", padding: "8px 0 24px" }}>
+          <div style={{ width: "100%", background: C.card, borderRadius: "26px 26px 0 0", border: `1px solid ${C.line}`, maxHeight: "82%", overflowY: "auto", padding: "8px 0 24px" }}>
             <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 6px" }}>
-              <div style={{ width: 38, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.18)" }} />
+              <div style={{ width: 38, height: 4, borderRadius: 2, background: C.line }} />
             </div>
             <div style={{ padding: "8px 20px 12px", display: "flex", alignItems: "center", gap: 8 }}>
               <InboxIcon size={17} color={C.muted} />

@@ -7,15 +7,18 @@
  * stays consistent across web, Android and iOS.
  */
 
+// Surface + text tokens are CSS variables so the app can switch light / dark at
+// runtime (see THEME_VARS + <ThemeProvider>). Brand colors stay literal — they
+// read well on both grounds and are safe to concatenate alpha onto.
 export const colors = {
   // surfaces
-  shell: "#04060b",
-  bg: "#0a0d14",
-  card: "#10141f",
-  cardAlt: "#0d1120",
-  input: "#161d2e",
-  line: "rgba(255,255,255,0.06)",
-  lineSoft: "rgba(255,255,255,0.04)",
+  shell: "var(--dg-shell)",
+  bg: "var(--dg-bg)",
+  card: "var(--dg-card)",
+  cardAlt: "var(--dg-cardAlt)",
+  input: "var(--dg-input)",
+  line: "var(--dg-line)",
+  lineSoft: "var(--dg-lineSoft)",
 
   // brand
   blue: "#4f8ef7",
@@ -25,10 +28,25 @@ export const colors = {
   red: "#ef4444",
 
   // text
-  text: "#eef0f6",
-  muted: "#8892aa",
-  faint: "#4d5a72",
+  text: "var(--dg-text)",
+  muted: "var(--dg-muted)",
+  faint: "var(--dg-faint)",
 } as const;
+
+/** The light (default) + dark palettes behind the CSS variables above. Injected
+ *  once at the app root. `:root` is LIGHT; `[data-theme="dark"]` swaps to dark. */
+export const THEME_VARS = `
+  :root {
+    --dg-shell:#e7ebf3; --dg-bg:#f5f7fb; --dg-card:#ffffff; --dg-cardAlt:#f0f3f9; --dg-input:#eef2f8;
+    --dg-line:rgba(13,38,76,0.10); --dg-lineSoft:rgba(13,38,76,0.06);
+    --dg-text:#0f1728; --dg-muted:#5a6474; --dg-faint:#94a0b3;
+  }
+  :root[data-theme="dark"] {
+    --dg-shell:#04060b; --dg-bg:#0a0d14; --dg-card:#10141f; --dg-cardAlt:#0d1120; --dg-input:#161d2e;
+    --dg-line:rgba(255,255,255,0.06); --dg-lineSoft:rgba(255,255,255,0.04);
+    --dg-text:#eef0f6; --dg-muted:#8892aa; --dg-faint:#4d5a72;
+  }
+`;
 
 export const gradients = {
   brand: `linear-gradient(135deg,${colors.blue},${colors.purple})`,

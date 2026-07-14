@@ -25,7 +25,7 @@ export const COUNTRIES = [
 export const STATS = [
   { num: "8+", label: "Countries with local numbers" },
   { num: "60s", label: "From sign-up to your first number" },
-  { num: "$1", label: "Numbers starting per month" },
+  { num: "$2.99", label: "Local numbers per month" },
   { num: "100%", label: "App-based — no SIM, no contract" },
 ];
 
@@ -65,58 +65,90 @@ export const FEATURES = [
 export const STEPS = [
   { n: "01", title: "Create your account", body: "Sign up in under a minute. No paperwork, no store visit." },
   { n: "02", title: "Pick a number", body: "Browse live local & mobile numbers and choose the one you like." },
-  { n: "03", title: "Top up your wallet", body: "Add credit securely with PayPal — pay only for what you use." },
+  { n: "03", title: "Top up your wallet", body: "Add credit securely by card — pay only for what you use." },
   { n: "04", title: "Call & text away", body: "Your new number is live instantly. Start messaging and calling." },
 ];
 
+/**
+ * DGRINGO pricing — mirrors the app's canonical catalog (src/app/core/plans.ts).
+ * Keep the two in sync: these are the numbers shown to customers, the app charges
+ * from the same values.
+ *
+ * How it works:
+ *   • Every number comes with a PLAN — pick Starter, Business or Pro (monthly or
+ *     annual). Each plan includes ONE free number plus a pool of minutes + SMS,
+ *     and lets you add more numbers up to a cap.
+ *   • When a plan's pool runs out you keep going pay-as-you-go (USAGE_RATES),
+ *     funded from the wallet — and we alert you near the limit so you can upgrade.
+ */
 export const PRICING = [
   {
     name: "Starter",
-    price: "0",
-    suffix: "/mo",
-    tagline: "Pay only for the numbers you buy.",
-    cta: "Get started",
+    monthly: 9.99,
+    yearly: 8.25,      // effective /mo when billed annually
+    yearlyTotal: 99,   // single upfront annual charge
+    unit: "/mo",
+    tagline: "A second line with room to grow.",
+    cta: "Get Starter",
     featured: false,
     features: [
-      "1 active number",
-      "Local numbers from $1/mo",
-      "Pay-as-you-go SMS & calls",
-      "Prepaid wallet (PayPal top-up)",
-      "Single shared inbox",
-    ],
-  },
-  {
-    name: "Pro",
-    price: "9",
-    suffix: "/mo",
-    tagline: "For freelancers & growing teams.",
-    cta: "Start Pro",
-    featured: true,
-    features: [
-      "Up to 10 active numbers",
-      "Per-number inboxes & contacts",
-      "Trust center 10DLC registration",
-      "Priority message delivery",
-      "Call & SMS history exports",
+      "1 number FREE (add up to 3)",
+      "300 minutes / mo",
+      "300 SMS / mo",
+      "Overage at pay-as-you-go rates",
       "Email support",
     ],
   },
   {
     name: "Business",
-    price: "29",
-    suffix: "/mo",
-    tagline: "Scale across countries & teammates.",
-    cta: "Contact sales",
-    featured: false,
+    monthly: 24.99,
+    yearly: 20.75,
+    yearlyTotal: 249,
+    unit: "/mo",
+    tagline: "For teams that live on calls & texts.",
+    cta: "Get Business",
+    featured: true, // Most popular
     features: [
-      "Unlimited numbers",
-      "8+ countries incl. mobile SMS",
-      "Team seats & roles",
-      "Advanced analytics dashboard",
-      "Webhooks & API access",
-      "Dedicated support",
+      "1 number FREE (add up to 5)",
+      "1,000 minutes / mo",
+      "1,000 SMS / mo",
+      "Overage at pay-as-you-go rates",
+      "Priority support",
     ],
   },
+  {
+    name: "Pro",
+    monthly: 49.99,
+    yearly: 41.58,
+    yearlyTotal: 499,
+    unit: "/mo",
+    tagline: "High volume, toll-free ready.",
+    cta: "Get Pro",
+    featured: false,
+    features: [
+      "1 toll-free number FREE (add up to 10)",
+      "3,000 minutes / mo",
+      "3,000 SMS / mo",
+      "Overage at pay-as-you-go rates",
+      "Priority support",
+    ],
+  },
+];
+
+/** Flat monthly rental for EXTRA numbers on a plan (the first is free). */
+export const NUMBER_RENTAL = [
+  { type: "Extra local number", price: "$2.99", unit: "/mo" },
+  { type: "Extra toll-free number", price: "$4.99", unit: "/mo" },
+];
+
+/** Pay-as-you-go usage rates — pooled across every number on the account. */
+export const USAGE_RATES = [
+  { item: "Voice — in & out", price: "$0.015", unit: "/min" },
+  { item: "Local SMS", price: "$0.015", unit: "/msg" },
+  { item: "Toll-free SMS", price: "$0.02", unit: "/msg" },
+  { item: "Short-code SMS", price: "$0.025", unit: "/msg" },
+  { item: "MMS — outbound", price: "$0.045", unit: "/msg" },
+  { item: "MMS — inbound", price: "$0.015", unit: "/msg" },
 ];
 
 export const FAQS = [
@@ -134,7 +166,15 @@ export const FAQS = [
   },
   {
     q: "How does billing work?",
-    a: "DGRINGO uses a prepaid wallet. You top up securely with PayPal and your balance is used for your monthly numbers, calls and texts. You always see a clear, itemised history of every charge.",
+    a: "Every number comes with a plan — you pick Starter, Business or Pro (billed monthly, or annually with 2 months free). Your plan includes one number FREE plus a pool of minutes and SMS, and you can add more numbers up to the plan's limit ($2.99/mo local, $4.99/mo toll-free each). When your included minutes or SMS run out you simply keep going pay-as-you-go — voice from $0.015/min, SMS from $0.015/msg, drawn from your prepaid wallet. You can pay for a plan or an extra number straight from the wallet, or directly by card.",
+  },
+  {
+    q: "What happens when I hit my plan limit?",
+    a: "We watch your usage and alert you inside the app (and web app) as you approach your plan's limit, so you can upgrade in a tap. If you keep going after the pool runs out, extra usage is billed pay-as-you-go from your wallet at standard rates — you're never cut off mid-conversation. Upgrading to a bigger plan gives you more included minutes, SMS and numbers.",
+  },
+  {
+    q: "Can I pay from my wallet or by card?",
+    a: "Both. Every purchase — a plan, an extra number, or a wallet top-up — can be paid straight from your prepaid wallet balance, or directly by card. Pay-as-you-go usage beyond your plan is always drawn from the wallet, so keeping a little balance means you're never cut off mid-conversation.",
   },
   {
     q: "Can I send business SMS?",

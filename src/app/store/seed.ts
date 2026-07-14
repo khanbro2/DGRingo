@@ -78,6 +78,7 @@ export const initialState: AppState = {
   calls: LIVE ? [] : SEED_CALLS,
   activity: LIVE ? [] : SEED_ACTIVITY,
   wallet: { balance: LIVE ? 0 : 24.5, txns: LIVE ? [] : SEED_TXNS },
+  subscription: null,
   preferences: {
     smsAlerts: true, callAlerts: true, lowBalance: true, marketing: false, push: true,
     sounds: true, readReceipts: true, enterToSend: false, compact: false,

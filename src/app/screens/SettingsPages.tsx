@@ -1,10 +1,11 @@
-import { useState, type ReactNode, type CSSProperties } from "react";
+import { useState, useEffect, useRef, type ReactNode, type CSSProperties } from "react";
 import {
   ArrowLeft, ChevronRight, Search, Phone, MessageSquare, Plus, X,
-  Mail, MessageCircle, HelpCircle,
+  Mail, MessageCircle, HelpCircle, Send,
 } from "lucide-react";
 import { C, gradients, font, radius } from "../core/theme";
 import { useApp } from "../store/AppStore";
+import { apiGetForwarding, apiSetForwarding, apiGetSupport, apiSendSupport, type ApiSupportMessage } from "../services/api";
 import type { Preferences } from "../core/types";
 
 /* ------------------------------------------------------------------ */
@@ -47,7 +48,7 @@ function Row({ label, sub, children, onClick, last }: { label: string; sub?: str
 
 function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
-    <button onClick={onClick} style={{ width: 44, height: 26, borderRadius: 13, border: "none", cursor: "pointer", position: "relative", background: on ? gradients.brand : "rgba(255,255,255,0.12)", transition: "background 0.2s", flexShrink: 0 }}>
+    <button onClick={onClick} style={{ width: 44, height: 26, borderRadius: 13, border: "none", cursor: "pointer", position: "relative", background: on ? gradients.brand : "rgba(120,130,150,0.35)", transition: "background 0.2s", flexShrink: 0 }}>
       <span style={{ position: "absolute", top: 3, left: on ? 21 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
     </button>
   );
@@ -137,6 +138,67 @@ export function GeneralPage({ onBack }: { onBack: () => void }) {
         <Row label="Time zone" onClick={() => showToast("Auto-detected from device")}><span style={muted}>Auto</span><ChevronRight size={16} color={C.faint} /></Row>
         <Row label="Appearance" last><span style={muted}>Dark</span></Row>
       </Group>
+    </SettingsShell>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Call forwarding                                                     */
+/* ------------------------------------------------------------------ */
+
+export function CallForwardingPage({ onBack }: { onBack: () => void }) {
+  const { state, showToast } = useApp();
+  const [fwd, setFwd] = useState("");
+  const [vm, setVm] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    apiGetForwarding()
+      .then((r) => { if (alive) { setFwd(r.forwardNumber || ""); setVm(r.voicemailEnabled !== false); } })
+      .catch(() => { /* first-time / offline — keep defaults */ })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await apiSetForwarding({ forwardNumber: fwd.trim(), voicemailEnabled: vm });
+      setFwd(r.forwardNumber || "");
+      showToast("Call forwarding saved");
+      onBack();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Could not save", "error");
+    } finally { setSaving(false); }
+  };
+
+  const activeNum = state.numbers[0]?.number;
+
+  return (
+    <SettingsShell title="Call forwarding" onBack={onBack}>
+      <div style={{ padding: "0 20px 8px" }}>
+        <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.55, marginBottom: 16 }}>
+          When someone calls your DGRINGO number{activeNum ? ` (${activeNum})` : ""}, we ring the app first.
+          If the app is closed, the call forwards to your real phone below — so you never miss a call.
+          If no one answers, the caller can leave a voicemail.
+        </p>
+        <Field label="Forward to (your real phone)" value={fwd} onChange={setFwd} placeholder="+1 (555) 000-0000" type="tel" />
+        <p style={{ color: C.faint, fontSize: 12, marginTop: -4, marginBottom: 8 }}>
+          Include the country code (e.g. +1 for the US). Leave blank to only ring the app + voicemail.
+        </p>
+      </div>
+      <Group title="Voicemail">
+        <Row label="Take voicemail" sub="Record a message when no one answers" last>
+          <Toggle on={vm} onClick={() => setVm((v) => !v)} />
+        </Row>
+      </Group>
+      <div style={{ padding: "4px 20px 20px" }}>
+        <button onClick={save} disabled={saving || loading} style={{ ...primaryBtn, opacity: saving || loading ? 0.6 : 1 }}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
     </SettingsShell>
   );
 }
@@ -282,38 +344,106 @@ const FAQ = [
 export function SupportPage({ onBack }: { onBack: () => void }) {
   const { showToast } = useApp();
   const [msg, setMsg] = useState("");
-  const [open, setOpen] = useState<number | null>(null);
+  const [messages, setMessages] = useState<ApiSupportMessage[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [showFaq, setShowFaq] = useState(false);
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const send = () => {
-    if (!msg.trim()) { showToast("Type a message first", "error"); return; }
-    setMsg(""); showToast("Message sent — we'll reply by email");
+  const scrollDown = () => requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
+
+  // Initial load + light polling so agent replies appear live.
+  useEffect(() => {
+    let alive = true;
+    const load = () => apiGetSupport()
+      .then((r) => { if (alive) { setMessages(r.messages); setLoaded(true); } })
+      .catch(() => { if (alive) setLoaded(true); });
+    load();
+    const t = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  useEffect(() => { if (messages.length) scrollDown(); }, [messages.length]);
+
+  const send = async () => {
+    const body = msg.trim();
+    if (!body || sending) return;
+    setSending(true); setMsg("");
+    try {
+      const r = await apiSendSupport(body);
+      setMessages(r.messages);
+    } catch (e) {
+      setMsg(body);
+      showToast(e instanceof Error ? e.message : "Could not send", "error");
+    } finally { setSending(false); }
   };
 
   return (
-    <SettingsShell title="Chat with us" onBack={onBack}>
-      <div style={{ padding: "0 20px 16px", display: "flex", gap: 10 }}>
-        <button onClick={() => showToast("Opening live chat…")} style={supportCard}><MessageCircle size={20} color={C.blue} /><span style={supportLabel}>Live chat</span></button>
-        <button onClick={() => showToast("support@dgringo.app")} style={supportCard}><Mail size={20} color={C.purple} /><span style={supportLabel}>Email us</span></button>
+    <SettingsShell title="Chat with support" onBack={onBack}>
+      <div style={{ padding: "0 20px 10px" }}>
+        <button onClick={() => setShowFaq((v) => !v)} style={{ ...supportCard, flexDirection: "row", justifyContent: "center", gap: 8, width: "100%", padding: "12px 0" }}>
+          <HelpCircle size={17} color={C.blue} /><span style={supportLabel}>{showFaq ? "Hide FAQ" : "Common questions (FAQ)"}</span>
+        </button>
+      </div>
+      {showFaq && (
+        <Group>
+          {FAQ.map((f, i) => (
+            <div key={i} style={{ borderBottom: i < FAQ.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+              <div onClick={() => setOpenFaq(openFaq === i ? null : i)} style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <HelpCircle size={16} color={C.muted} />
+                <p style={{ flex: 1, color: C.text, fontSize: 13.5, fontWeight: 600 }}>{f.q}</p>
+                <ChevronRight size={15} color={C.faint} style={{ transform: openFaq === i ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+              </div>
+              {openFaq === i && <p style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5, padding: "0 16px 14px 42px" }}>{f.a}</p>}
+            </div>
+          ))}
+        </Group>
+      )}
+
+      {/* Live chat thread */}
+      <div style={{ padding: "0 16px 12px", display: "flex", flexDirection: "column", gap: 10, minHeight: 240 }}>
+        {!loaded ? (
+          <p style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "30px 0" }}>Loading…</p>
+        ) : messages.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "24px 20px" }}>
+            <div style={{ width: 52, height: 52, borderRadius: "50%", background: `${C.blue}18`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+              <MessageCircle size={24} color={C.blue} />
+            </div>
+            <p style={{ color: C.text, fontSize: 15, fontWeight: 700 }}>How can we help?</p>
+            <p style={{ color: C.muted, fontSize: 12.5, marginTop: 6, lineHeight: 1.5 }}>Send us a message and our team will reply right here. You'll get a notification when we respond.</p>
+          </div>
+        ) : (
+          messages.map((m) => {
+            const mine = m.sender === "user";
+            return (
+              <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+                {!mine && <p style={{ color: C.muted, fontSize: 10.5, fontWeight: 700, margin: "0 0 3px 10px" }}>{m.agentName || "Support"}</p>}
+                <div style={{
+                  maxWidth: "80%", padding: "10px 13px", fontSize: 14, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  background: mine ? gradients.brand : C.card, color: mine ? "#fff" : C.text,
+                  border: mine ? "none" : `1px solid ${C.lineSoft}`,
+                  borderRadius: 16, borderBottomRightRadius: mine ? 4 : 16, borderBottomLeftRadius: mine ? 16 : 4,
+                }}>{m.body}</div>
+                <p style={{ color: C.faint, fontSize: 10, margin: "3px 8px 0" }}>{m.time}</p>
+              </div>
+            );
+          })
+        )}
+        <div ref={bottomRef} />
       </div>
 
-      <Group title="FAQ">
-        {FAQ.map((f, i) => (
-          <div key={i} style={{ borderBottom: i < FAQ.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
-            <div onClick={() => setOpen(open === i ? null : i)} style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-              <HelpCircle size={16} color={C.muted} />
-              <p style={{ flex: 1, color: C.text, fontSize: 13.5, fontWeight: 600 }}>{f.q}</p>
-              <ChevronRight size={15} color={C.faint} style={{ transform: open === i ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
-            </div>
-            {open === i && <p style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5, padding: "0 16px 14px 42px" }}>{f.a}</p>}
-          </div>
-        ))}
-      </Group>
-
-      <div style={{ padding: "0 20px" }}>
-        <p style={{ color: C.muted, fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 8 }}>Send a message</p>
-        <textarea value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Describe your issue…" rows={4}
-          style={{ width: "100%", padding: "13px 14px", background: C.input, border: `1px solid ${C.line}`, borderRadius: radius.md, color: C.text, fontSize: 14, outline: "none", fontFamily: font.sans, resize: "none" }} />
-        <button onClick={send} style={primaryBtn}>Send message</button>
+      {/* Composer */}
+      <div style={{ padding: "0 16px 20px", display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <textarea value={msg} onChange={(e) => setMsg(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Type your message…" rows={1}
+          style={{ flex: 1, padding: "12px 14px", background: C.input, border: `1px solid ${C.line}`, borderRadius: 22, color: C.text, fontSize: 14, outline: "none", fontFamily: font.sans, resize: "none", maxHeight: 120 }} />
+        <button onClick={send} disabled={sending || !msg.trim()} style={{
+          width: 46, height: 46, borderRadius: "50%", background: gradients.brand, border: "none",
+          display: "flex", alignItems: "center", justifyContent: "center", cursor: sending || !msg.trim() ? "default" : "pointer",
+          opacity: sending || !msg.trim() ? 0.5 : 1, flexShrink: 0,
+        }}><Send size={18} color="#fff" /></button>
       </div>
     </SettingsShell>
   );

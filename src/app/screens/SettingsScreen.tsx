@@ -1,14 +1,15 @@
 import type { ReactNode } from "react";
 import {
   ChevronRight, Building2, Hash, CreditCard, ShieldCheck, Contact,
-  Ban, UserCircle, SlidersHorizontal, Bell, MessageCircle, LogOut,
+  Ban, UserCircle, SlidersHorizontal, Bell, MessageCircle, LogOut, Sparkles, PhoneForwarded,
 } from "lucide-react";
 import { C, gradients, font, radius } from "../core/theme";
 import { useApp } from "../store/AppStore";
+import { ThemeToggle } from "../core/theme-context";
 
 export type SettingsRoute =
   | "profile" | "general" | "preferences" | "notifications"
-  | "contacts" | "blocklist" | "support" | "trust" | "numbers" | "billing";
+  | "contacts" | "blocklist" | "support" | "trust" | "numbers" | "billing" | "plans" | "forwarding";
 
 interface Props { go: (route: SettingsRoute) => void; }
 
@@ -21,7 +22,9 @@ export function SettingsScreen({ go }: Props) {
   const workspace: Item[] = [
     { Icon: Building2,  label: "General",        color: C.blue,   onClick: () => go("general") },
     { Icon: Hash,       label: "Phone numbers",  color: C.purple, onClick: () => go("numbers") },
-    { Icon: CreditCard, label: "Plan & billing", color: C.green,  onClick: () => go("billing") },
+    { Icon: PhoneForwarded, label: "Call forwarding", color: C.green, onClick: () => go("forwarding") },
+    { Icon: Sparkles,   label: "Plans & bundles",color: C.blue,   onClick: () => go("plans") },
+    { Icon: CreditCard, label: "Wallet & billing",color: C.green,  onClick: () => go("billing") },
     { Icon: ShieldCheck,label: "Trust center",   color: C.amber,  onClick: () => go("trust"), badge: unverified || undefined },
     { Icon: Contact,    label: "Contacts",       color: C.blue,   onClick: () => go("contacts") },
     { Icon: Ban,        label: "Blocklist",      color: C.red,    onClick: () => go("blocklist") },
@@ -53,6 +56,11 @@ export function SettingsScreen({ go }: Props) {
 
       <Section title="Workspace" items={workspace} />
       <Section title="Your account" items={account} />
+
+      <div style={{ padding: "0 20px 16px" }}>
+        <SectionLabel>Appearance</SectionLabel>
+        <ThemeToggle variant="row" />
+      </div>
 
       <div style={{ padding: "0 20px 16px" }}>
         <SectionLabel>Help</SectionLabel>

@@ -11,6 +11,10 @@ dist/
 .env.local
 .env.*.local
 
+# Deploy artifacts (built bundle for manual upload)
+*.zip
+*.tar.gz
+
 # Logs & misc
 *.log
 npm-debug.log*

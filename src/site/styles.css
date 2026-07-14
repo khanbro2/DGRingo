@@ -13,8 +13,21 @@
   --bg-3: #0b0f1c;
   --card: rgba(255, 255, 255, 0.024);
   --card-2: rgba(255, 255, 255, 0.04);
+  --card-shadow: none;
   --line: rgba(255, 255, 255, 0.08);
   --line-soft: rgba(255, 255, 255, 0.05);
+  --line-strong: rgba(255, 255, 255, 0.16);
+
+  /* interactive overlays (must flip for light mode) */
+  --hover: rgba(255, 255, 255, 0.05);
+  --hover-2: rgba(255, 255, 255, 0.09);
+  --input-bg: rgba(255, 255, 255, 0.035);
+  --nav-bg: rgba(7, 10, 18, 0.72);
+  --drawer-bg: rgba(5, 7, 13, 0.96);
+
+  /* ambient page glow */
+  --glow-a: rgba(155, 111, 247, 0.16);
+  --glow-b: rgba(79, 142, 247, 0.16);
 
   /* brand */
   --blue: #4f8ef7;
@@ -26,6 +39,7 @@
   --text: #f3f5fb;
   --muted: #9aa4bd;
   --faint: #586079;
+  --grad-text-start: #ffffff;
 
   --grad: linear-gradient(120deg, var(--blue), var(--purple));
   --grad-soft: linear-gradient(120deg, rgba(79, 142, 247, 0.16), rgba(155, 111, 247, 0.16));
@@ -36,6 +50,33 @@
 
   --radius: 22px;
   --radius-lg: 30px;
+}
+
+/* --- light theme — PayPal-inspired: clean white surfaces + blue ------------ */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-2: #f5f7fa;
+  --bg-3: #eef2f8;
+  --card: #ffffff;
+  --card-2: #f7f9fc;
+  --card-shadow: 0 1px 2px rgba(13, 38, 76, 0.05), 0 14px 30px -20px rgba(13, 38, 76, 0.22);
+  --line: rgba(13, 38, 76, 0.10);
+  --line-soft: rgba(13, 38, 76, 0.07);
+  --line-strong: rgba(13, 38, 76, 0.18);
+
+  --hover: rgba(13, 38, 76, 0.04);
+  --hover-2: rgba(13, 38, 76, 0.07);
+  --input-bg: #ffffff;
+  --nav-bg: rgba(255, 255, 255, 0.82);
+  --drawer-bg: rgba(255, 255, 255, 0.97);
+
+  --glow-a: rgba(0, 112, 186, 0.08);
+  --glow-b: rgba(123, 110, 247, 0.08);
+
+  --text: #0a1b3d;
+  --muted: #5a647a;
+  --faint: #8b94a8;
+  --grad-text-start: #06122e;
 }
 
 * { box-sizing: border-box; }
@@ -51,6 +92,7 @@ body {
   text-rendering: optimizeLegibility;
   letter-spacing: -0.011em;
   overflow-x: hidden;
+  transition: background 0.3s var(--ease), color 0.3s var(--ease);
 }
 
 a { color: inherit; text-decoration: none; }
@@ -62,12 +104,20 @@ button { font-family: inherit; cursor: pointer; }
 .dg-shell::before {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: -4%;
   z-index: -2;
   background:
-    radial-gradient(900px 540px at 78% -8%, rgba(155, 111, 247, 0.16), transparent 60%),
-    radial-gradient(820px 500px at 12% 4%, rgba(79, 142, 247, 0.16), transparent 58%),
+    radial-gradient(900px 540px at 78% -8%, var(--glow-a), transparent 60%),
+    radial-gradient(820px 500px at 12% 4%, var(--glow-b), transparent 58%),
     var(--bg);
+  animation: dg-glowdrift 20s ease-in-out infinite;
+}
+@keyframes dg-glowdrift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -1.5%, 0) scale(1.03); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dg-shell::before, .dg-marquee-track { animation: none; }
 }
 .dg-shell::after {
   content: "";
@@ -122,7 +172,7 @@ button { font-family: inherit; cursor: pointer; }
   margin: 0;
 }
 .dg-grad-text {
-  background: linear-gradient(120deg, #fff 12%, var(--blue) 52%, var(--purple) 96%);
+  background: linear-gradient(120deg, var(--grad-text-start) 12%, var(--blue) 52%, var(--purple) 96%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -151,8 +201,8 @@ button { font-family: inherit; cursor: pointer; }
   box-shadow: 0 10px 34px -10px rgba(79, 142, 247, 0.7);
 }
 .dg-btn-primary:hover { transform: translateY(-2px); box-shadow: 0 18px 44px -12px rgba(123, 110, 247, 0.8); }
-.dg-btn-ghost { background: rgba(255, 255, 255, 0.05); color: var(--text); border-color: var(--line); }
-.dg-btn-ghost:hover { background: rgba(255, 255, 255, 0.09); transform: translateY(-2px); }
+.dg-btn-ghost { background: var(--hover); color: var(--text); border-color: var(--line); }
+.dg-btn-ghost:hover { background: var(--hover-2); transform: translateY(-2px); }
 .dg-btn-sm { height: 40px; padding: 0 18px; font-size: 14px; }
 .dg-btn-lg { height: 54px; padding: 0 30px; font-size: 16px; }
 
@@ -168,7 +218,7 @@ button { font-family: inherit; cursor: pointer; }
   border-bottom: 1px solid transparent;
 }
 .dg-nav.scrolled {
-  background: rgba(7, 10, 18, 0.72);
+  background: var(--nav-bg);
   backdrop-filter: saturate(180%) blur(18px);
   -webkit-backdrop-filter: saturate(180%) blur(18px);
   border-bottom: 1px solid var(--line-soft);
@@ -183,10 +233,15 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 999px;
   transition: color 0.2s, background 0.2s;
 }
-.dg-nav-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.dg-nav-link:hover { color: var(--text); background: var(--hover); }
 .dg-nav-link.active { color: var(--text); }
 .dg-nav-cta { display: flex; align-items: center; gap: 10px; }
-.dg-burger { display: none; width: 42px; height: 42px; border-radius: 12px; background: rgba(255,255,255,0.05); border: 1px solid var(--line); align-items: center; justify-content: center; color: var(--text); }
+.dg-burger { display: none; width: 42px; height: 42px; border-radius: 12px; background: var(--hover); border: 1px solid var(--line); align-items: center; justify-content: center; color: var(--text); }
+
+/* round icon button (theme toggle, etc.) */
+.dg-icon-btn { width: 40px; height: 40px; border-radius: 999px; background: var(--hover); border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; color: var(--text); flex-shrink: 0; transition: background 0.2s, color 0.2s, transform 0.2s; }
+.dg-icon-btn:hover { background: var(--hover-2); }
+.dg-icon-btn:active { transform: scale(0.92); }
 
 /* --- brand mark ------------------------------------------------------------ */
 .dg-logo { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; letter-spacing: -0.02em; }
@@ -206,9 +261,10 @@ button { font-family: inherit; cursor: pointer; }
   padding: 30px;
   position: relative;
   overflow: hidden;
-  transition: transform 0.35s var(--ease), border-color 0.35s var(--ease), background 0.35s var(--ease);
+  box-shadow: var(--card-shadow);
+  transition: transform 0.35s var(--ease), border-color 0.35s var(--ease), background 0.35s var(--ease), box-shadow 0.35s var(--ease);
 }
-.dg-card:hover { transform: translateY(-4px); border-color: rgba(255,255,255,0.16); background: var(--card-2); }
+.dg-card:hover { transform: translateY(-4px); border-color: var(--line-strong); background: var(--card-2); }
 .dg-card-icon {
   width: 50px; height: 50px; border-radius: 15px;
   display: grid; place-items: center;
@@ -276,6 +332,7 @@ button { font-family: inherit; cursor: pointer; }
 /* --- marquee (logos / countries) ------------------------------------------ */
 .dg-marquee { overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
 .dg-marquee-track { display: flex; gap: 14px; width: max-content; animation: dg-scroll 32s linear infinite; }
+.dg-marquee:hover .dg-marquee-track { animation-play-state: paused; }
 @keyframes dg-scroll { to { transform: translateX(-50%); } }
 .dg-flagchip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); white-space: nowrap; font-weight: 600; font-size: 15px; }
 .dg-flagchip .flag { font-size: 22px; }
@@ -295,13 +352,32 @@ button { font-family: inherit; cursor: pointer; }
 /* --- forms / auth ---------------------------------------------------------- */
 .dg-auth { min-height: 100vh; display: grid; grid-template-columns: 1.05fr 0.95fr; }
 .dg-auth-panel { display: flex; flex-direction: column; justify-content: center; padding: 56px clamp(28px, 6vw, 92px); }
-.dg-auth-aside { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; padding: 56px; background: linear-gradient(150deg, #0e1530, #0a0d16 55%, #140d2c); border-left: 1px solid var(--line); }
+.dg-auth-aside {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center;
+  padding: 56px;
+  background: linear-gradient(150deg, #0e1530, #0a0d16 55%, #140d2c);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  /* This panel is always a dark gradient — keep dark-theme text tokens here so
+     its contents stay legible even when the rest of the site is in light mode.
+     The explicit `color` re-resolves --text so plain inherited text flips too. */
+  color: #f3f5fb;
+  --text: #f3f5fb;
+  --muted: #9aa4bd;
+  --faint: #586079;
+  --grad-text-start: #ffffff;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --card: rgba(255, 255, 255, 0.04);
+  --card-2: rgba(255, 255, 255, 0.06);
+  --hover: rgba(255, 255, 255, 0.05);
+  --hover-2: rgba(255, 255, 255, 0.09);
+}
 .dg-field { margin-bottom: 16px; }
 .dg-label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
 .dg-input {
   width: 100%; height: 50px; padding: 0 16px;
   border-radius: 14px;
-  background: rgba(255,255,255,0.035);
+  background: var(--input-bg);
   border: 1px solid var(--line);
   color: var(--text); font-size: 15px;
   transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
@@ -314,8 +390,8 @@ button { font-family: inherit; cursor: pointer; }
 .dg-divider { display: flex; align-items: center; gap: 14px; color: var(--faint); font-size: 13px; margin: 22px 0; }
 .dg-divider::before, .dg-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .dg-social { display: flex; gap: 12px; }
-.dg-social-btn { flex: 1; height: 48px; border-radius: 14px; background: rgba(255,255,255,0.04); border: 1px solid var(--line); color: var(--text); display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; transition: background 0.2s, border-color 0.2s; }
-.dg-social-btn:hover { background: rgba(255,255,255,0.08); }
+.dg-social-btn { flex: 1; height: 48px; border-radius: 14px; background: var(--hover); border: 1px solid var(--line); color: var(--text); display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; transition: background 0.2s, border-color 0.2s; }
+.dg-social-btn:hover { background: var(--hover-2); }
 
 /* --- accordion (faq) ------------------------------------------------------- */
 .dg-faq-item { border-bottom: 1px solid var(--line); }
@@ -350,9 +426,22 @@ button { font-family: inherit; cursor: pointer; }
 .dg-chip { display: inline-flex; align-items: center; gap: 8px; padding: 9px 15px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); font-size: 13.5px; font-weight: 500; color: var(--muted); }
 
 /* --- mobile drawer --------------------------------------------------------- */
-.dg-drawer { position: fixed; inset: 0; z-index: 200; background: rgba(5,7,13,0.96); backdrop-filter: blur(20px); display: flex; flex-direction: column; padding: 20px 24px; transform: translateY(-100%); transition: transform 0.4s var(--ease); }
+.dg-drawer { position: fixed; inset: 0; z-index: 200; background: var(--drawer-bg); backdrop-filter: blur(20px); display: flex; flex-direction: column; padding: 20px 24px; transform: translateY(-100%); transition: transform 0.4s var(--ease); }
 .dg-drawer.open { transform: none; }
 .dg-drawer a { font-size: 22px; font-weight: 600; padding: 16px 0; border-bottom: 1px solid var(--line); }
+
+/* --- ripple hero ----------------------------------------------------------- */
+/* Fades the pixel-ripple canvas softly into the page background at the edges so
+   it reads as ambient depth rather than a hard rectangle. Sits above the canvas
+   (z-index 0) but below the headline/buttons (.dg-wrap, z-index 1). */
+.dg-hero-ripple::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(125% 78% at 50% 38%, transparent 38%, var(--bg) 90%);
+}
 
 /* --- hero / showcase grids (class-based so they collapse on mobile) -------- */
 .dg-hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 40px; align-items: center; }

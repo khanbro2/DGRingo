@@ -4,11 +4,32 @@
     <head>
       
       <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
       <title>DGRINGO</title>
       <meta name="description" content="Manage virtual phone numbers effortlessly with a sleek interface, allowing users to send SMS, track expenses, and access messages in one app." />
       <meta name="robots" content="noindex, nofollow" />
-      <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
+
+      <!-- PWA / installable app -->
+      <link rel="manifest" href="/manifest.webmanifest" />
+      <meta name="theme-color" content="#4f8ef7" />
+      <meta name="mobile-web-app-capable" content="yes" />
+      <meta name="apple-mobile-web-app-capable" content="yes" />
+      <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+      <meta name="apple-mobile-web-app-title" content="DGRINGO" />
+      <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+      <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+      <script>
+        // Apply saved theme before first paint (default light). Shares the site's key.
+        try {
+          var t = localStorage.getItem("dg-theme");
+          document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+        } catch (e) { document.documentElement.setAttribute("data-theme", "light"); }
+      </script>
+      <style>
+        html, body { height: 100%; margin: 0; background: #e7ebf3; }
+        html[data-theme="dark"], html[data-theme="dark"] body { background: #04060b; }
+        #root { height: 100%; }
+      </style>
       
     </head>
 
@@ -16,7 +37,15 @@
       
       <div id="root"></div>
       <script type="module" src="/src/main.tsx"></script>
-      
+      <script>
+        // Register the service worker so the app is installable (PWA / APK).
+        if ("serviceWorker" in navigator) {
+          window.addEventListener("load", function () {
+            navigator.serviceWorker.register("/sw.js").catch(function () {});
+          });
+        }
+      </script>
+
     </body>
   </html>
   

@@ -58,7 +58,7 @@ export function NumbersScreen({ onBuyNumber, onOpenSettings, onOpenInbox }: Prop
             <ChevronDown size={13} />
           </button>
           {dropOpen && (
-            <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50, background: "#151c2c", border: `1px solid ${C.line}`, borderRadius: 14, minWidth: 170, overflow: "hidden", boxShadow: "0 12px 40px rgba(0,0,0,0.6)" }}>
+            <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50, background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, minWidth: 170, overflow: "hidden", boxShadow: "0 12px 40px rgba(0,0,0,0.35)" }}>
               {countries.map((c, i) => (
                 <button key={c} onClick={() => { setCountry(c); setDropOpen(false); }} style={{
                   width: "100%", padding: "11px 16px", textAlign: "left",

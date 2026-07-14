@@ -1,3 +1,7 @@
 @import './fonts.css';
 @import './tailwind.css';
 @import './theme.css';
+
+/* spinner for verification form submit buttons */
+@keyframes dg-spin { to { transform: rotate(360deg); } }
+.dg-spin { animation: dg-spin 0.8s linear infinite; }

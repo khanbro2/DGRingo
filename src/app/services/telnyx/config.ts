@@ -9,13 +9,16 @@
  *   VITE_TELNYX_MODE = "mock" | "live"      (default: mock)
  *   VITE_API_BASE    = "/api/telnyx"        (your backend proxy base path)
  */
+import { API_ORIGIN } from "../origin";
+
 type Env = Record<string, string | undefined>;
 const env: Env = (import.meta as unknown as { env: Env }).env ?? {};
 
 export const TELNYX_MODE: "mock" | "live" =
   env.VITE_TELNYX_MODE === "live" ? "live" : "mock";
 
-export const API_BASE: string = env.VITE_API_BASE ?? "/api/telnyx";
+// On native builds API_ORIGIN is the absolute server; on web it's "" (same-origin).
+export const API_BASE: string = API_ORIGIN + (env.VITE_API_BASE ?? "/api/telnyx");
 
 /** The messaging profile / brand used by the workspace (set after onboarding). */
 export const DEFAULT_MESSAGING_PROFILE_ID = env.VITE_TELNYX_MESSAGING_PROFILE_ID ?? "mp_dgringo_default";
