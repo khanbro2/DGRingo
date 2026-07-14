@@ -404,33 +404,42 @@ async function ensureSipCreds() {
   return SIP_CREDS;
 }
 
-/* Per-user WebRTC identity. Each user gets their OWN Telnyx telephony credential
- * (unique sip_username) under the WebRTC connection, so an inbound TeXML
- * <Dial><Sip> rings the RIGHT user's softphone (not the shared-login collision).
- * The sip_username is persisted; the browser logs in with a short-lived token. */
+/* Per-user WebRTC identity — each user gets their OWN Telnyx CREDENTIAL CONNECTION
+ * (static username/password). This is deliberate: on-demand telephony credentials
+ * are OUTBOUND-ONLY (inbound never rings them), which sent every incoming call to
+ * voicemail even with the app open. A registered credential connection RECEIVES
+ * inbound, so the TeXML <Dial><Sip> leg rings the right user's softphone. Creds
+ * are deterministic (derived from AUTH_SECRET + uid) — nothing secret persisted. */
+const userSipPassword = (uid) =>
+  "Dg" + createHmac("sha256", process.env.AUTH_SECRET || "dgringo").update("sipuser:" + uid).digest("hex").slice(0, 26);
+
 async function ensureUserSipCredential(uid) {
   const v = await db.getVoiceSettings(uid);
-  // Reuse the stored credential if it still exists on Telnyx.
-  if (v.sipCredentialId && v.sipUsername) {
-    const chk = await telnyxFetch(`/telephony_credentials/${v.sipCredentialId}`).catch(() => null);
-    if (chk && chk.ok) return { credentialId: v.sipCredentialId, sipUsername: v.sipUsername };
+  const username = `dgringou${uid}`;            // Telnyx SIP usernames must be alphanumeric
+  const password = userSipPassword(uid);
+  // Reuse the stored per-user credential connection if it still exists.
+  if (v.sipCredentialId && String(v.sipUsername || "").startsWith("dgringou")) {
+    const chk = await telnyxFetch(`/credential_connections/${v.sipCredentialId}`).catch(() => null);
+    if (chk && chk.ok) {
+      await telnyxFetch(`/credential_connections/${v.sipCredentialId}`, {
+        method: "PATCH", body: JSON.stringify({ user_name: username, password }),
+      }).catch(() => {}); // keep creds pinned to our known values (idempotent)
+      return { credentialId: v.sipCredentialId, sipUsername: username, password };
+    }
   }
-  const connId = await getSipConnectionId();
-  const cr = await telnyxFetch("/telephony_credentials", {
-    method: "POST", body: JSON.stringify({ connection_id: connId, name: `dgringo-u${uid}` }),
+  // Create a dedicated per-user credential connection (+ OVP so outbound works).
+  const ovp = await ensureOutboundProfileId().catch(() => null);
+  const cr = await telnyxFetch("/credential_connections", {
+    method: "POST", body: JSON.stringify({ connection_name: `DGRINGO u${uid}`, user_name: username, password }),
   });
   const cj = await cr.json().catch(() => ({}));
   if (!cr.ok || !cj?.data?.id) throw new Error(cj?.errors?.[0]?.detail || "Could not create voice identity");
-  const credentialId = cj.data.id, sipUsername = cj.data.sip_username;
-  await db.setSipCredential(uid, { sipUsername, sipCredentialId: credentialId });
-  return { credentialId, sipUsername };
-}
-
-/** Mint a short-lived WebRTC login token from a telephony credential. */
-async function mintRtcToken(credentialId) {
-  const r = await telnyxFetch(`/telephony_credentials/${credentialId}/token`, { method: "POST" });
-  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j?.errors?.[0]?.detail || "Could not mint voice token"); }
-  return (await r.text()).trim();
+  const connId = cj.data.id;
+  if (ovp) await telnyxFetch(`/credential_connections/${connId}`, {
+    method: "PATCH", body: JSON.stringify({ outbound: { outbound_voice_profile_id: ovp } }),
+  }).catch(() => {});
+  await db.setSipCredential(uid, { sipUsername: username, sipCredentialId: connId });
+  return { credentialId: connId, sipUsername: username, password };
 }
 
 /* --------------------------------------------------- incoming-call routing (TeXML)
@@ -1011,17 +1020,16 @@ createServer(async (req, res) => {
         if (nums && nums[0]) callerNumber = nums[0].e164;
       } catch { /* no numbers yet — caller id falls back to connection default */ }
       try { const u = await db.getUser?.(uid); callerName = u?.name || null; } catch { /* optional */ }
-      // Per-user identity so inbound rings the right user's app; token login so
-      // the SIP password never reaches the browser.
+      // Per-user CREDENTIAL CONNECTION login (static user/pass) so the client
+      // both places AND receives calls — inbound rings the right user's app.
       try {
-        const { credentialId, sipUsername } = await ensureUserSipCredential(uid);
-        const loginToken = await mintRtcToken(credentialId);
-        return send(res, 200, { loginToken, sipUsername, callerNumber, callerName });
+        const { sipUsername, password } = await ensureUserSipCredential(uid);
+        return send(res, 200, { login: sipUsername, password, sipUsername, callerNumber, callerName });
       } catch (e) {
-        // Fallback to the shared static credential so outbound voice still works.
+        // Fallback to the shared static credential so voice still works at all.
         console.error("rtc per-user cred failed, using shared:", e.message);
         const creds = await ensureSipCreds();
-        return send(res, 200, { login: creds.login, password: creds.password, callerNumber, callerName });
+        return send(res, 200, { login: creds.login, password: creds.password, sipUsername: creds.login, callerNumber, callerName });
       }
     } catch (e) {
       return send(res, e.status || 502, { error: e.message || "Could not start voice session" });
