@@ -76,24 +76,51 @@ jobs:
           fi
           date > restart.txt
           CP="ssh -a -x -i $HOME/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25"
-          lftp -c "
-            set sftp:connect-program \"$CP\";
-            set sftp:auto-confirm yes;
-            set net:max-retries 4; set net:timeout 25; set net:reconnect-interval-base 6;
-            set mirror:parallel-transfer-count 1;
-            open -u \"$SSH_USER,\" sftp://$SSH_HOST;
-            mirror -R --delete --verbose dist/ \"$BASE/dist/\";
-            mirror -R --verbose --include-glob=*.mjs server/ \"$BASE/server/\";
-            mirror -R --verbose --include-glob=*.sql server/migrations/ \"$BASE/server/migrations/\";
-            put -O \"$BASE/tmp/\" restart.txt;
-            bye
-          "
+          # `cmd:fail-exit yes` is what makes a failed mirror actually fail the
+          # step. Without it lftp kept going after "mirror: Fatal error:
+          # max-retries exceeded", still exited 0, and the job reported success
+          # while dist/ had never been uploaded — the site silently stayed stale.
+          # Each mirror is its own lftp invocation so `set -e` catches it and the
+          # log shows exactly which one died.
+          run_lftp() {
+            lftp -c "
+              set cmd:fail-exit yes;
+              set sftp:connect-program \"$CP\";
+              set sftp:auto-confirm yes;
+              set net:max-retries 6; set net:timeout 25; set net:reconnect-interval-base 8;
+              set mirror:parallel-transfer-count 1;
+              open -u \"$SSH_USER,\" sftp://$SSH_HOST;
+              $1;
+              bye
+            "
+          }
+          # Hostinger drops long sessions, so give the big dist mirror 3 attempts;
+          # each resumes where the last left off.
+          for attempt in 1 2 3; do
+            echo "── dist mirror, attempt $attempt"
+            if run_lftp "mirror -R --delete --verbose dist/ \"$BASE/dist/\""; then break; fi
+            if [ "$attempt" = 3 ]; then echo "::error::dist/ upload failed after 3 attempts"; exit 1; fi
+            sleep 20
+          done
+          run_lftp "mirror -R --verbose --include-glob=*.mjs server/ \"$BASE/server/\""
+          run_lftp "mirror -R --verbose --include-glob=*.sql server/migrations/ \"$BASE/server/migrations/\""
+          run_lftp "put -O \"$BASE/tmp/\" restart.txt"
           echo '✓ deployed via SFTP + restart triggered'
 
       - name: Verify
         run: |
-          sleep 5
+          sleep 8
           code=$(curl -s -o /dev/null -w '%{http_code}' https://digiringo.com/app || echo "000")
           echo "digiringo.com/app → $code"
-          bundle=$(curl -s "https://digiringo.com/app?cb=$(date +%s)" | grep -oE 'main-[A-Za-z0-9_-]+\.js' | head -1)
-          echo "live bundle: $bundle"
+          # Assert the LIVE bundle is the one we just built. A stale hash means the
+          # upload silently didn't land, which is exactly the failure that shipped
+          # a renamed site to nobody.
+          want=$(grep -oE 'main-[A-Za-z0-9_-]+\.js' dist/index.html | head -1)
+          live=$(curl -s "https://digiringo.com/app?cb=$(date +%s)" | grep -oE 'main-[A-Za-z0-9_-]+\.js' | head -1)
+          echo "built: $want"
+          echo "live : $live"
+          if [ -z "$live" ] || [ "$want" != "$live" ]; then
+            echo "::error::live bundle ($live) does not match the build ($want) — deploy did not land"
+            exit 1
+          fi
+          echo "✓ live bundle matches the build"
