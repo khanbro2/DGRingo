@@ -54,25 +54,27 @@ jobs:
       - name: Set up SSH deploy key
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/deploy_key
+          # `tr -d '\r'` repairs a key pasted from a Windows editor (CRLF would
+          # otherwise corrupt it and SSH auth fails).
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: Deploy over SSH (rsync)
+      - name: Deploy over SSH (tar — no rsync dependency)
         env:
           SSH_HOST: 153.92.10.88
           SSH_USER: u545142772
           SSH_PORT: "65002"
           BASE: domains/digiringo.com/public_html
         run: |
-          RSH="ssh -i ~/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
-          # 1) Front-end: sync the built bundle, pruning stale hashed files.
-          rsync -az --delete -e "$RSH" dist/ "$SSH_USER@$SSH_HOST:$BASE/dist/"
-          # 2) Server code: only .mjs + SQL migrations — never .env or node_modules.
-          rsync -az -e "$RSH" \
-            --include='*/' --include='*.mjs' --include='migrations/*.sql' --exclude='*' \
-            server/ "$SSH_USER@$SSH_HOST:$BASE/server/"
-          # 3) Restart the Node app (Passenger watches tmp/restart.txt).
-          $RSH "$SSH_USER@$SSH_HOST" "mkdir -p $BASE/tmp && touch $BASE/tmp/restart.txt && echo '✓ deployed + restarted'"
+          SSH="ssh -i ~/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 $SSH_USER@$SSH_HOST"
+          echo '→ testing SSH auth…'
+          $SSH 'echo SSH_OK'
+          echo '→ shipping front-end (dist)…'
+          tar czf - -C dist . | $SSH "mkdir -p $BASE/dist && tar xzf - -C $BASE/dist --no-same-owner"
+          echo '→ shipping server code (.mjs + migrations)…'
+          tar czf - server/*.mjs server/migrations/*.sql | $SSH "tar xzf - -C $BASE --no-same-owner"
+          echo '→ restarting Node app…'
+          $SSH "mkdir -p $BASE/tmp && touch $BASE/tmp/restart.txt && echo '✓ deployed + restarted'"
 
       - name: Verify
         run: |
