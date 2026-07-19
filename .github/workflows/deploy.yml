@@ -59,7 +59,11 @@ jobs:
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: Deploy over SSH (tar — no rsync dependency)
+      - name: Install lftp
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+
+      - name: Deploy via SFTP (no remote shell — Hostinger kills shell sessions
+              from datacenter IPs, but the SFTP subsystem is allowed)
         env:
           SSH_HOST: 153.92.10.88
           SSH_USER: u545142772
@@ -70,23 +74,21 @@ jobs:
             echo "::error::HOSTINGER_SSH_KEY is not a valid private key — re-copy the ENTIRE key incl. BEGIN/END lines."
             exit 1
           fi
-          SSH="ssh -i ~/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ConnectTimeout=25 $SSH_USER@$SSH_HOST"
-          # Hostinger intermittently resets an authenticated session (fail2ban-ish).
-          # Auth itself works, so just retry each op a few times with a backoff.
-          retry() { local n; for n in 1 2 3 4 5; do if "$@"; then return 0; fi; echo "  …reset, retry $n/5"; sleep 8; done; return 1; }
-          ship_dist() { tar czf - -C dist . | $SSH "mkdir -p $BASE/dist && tar xzf - -C $BASE/dist --no-same-owner"; }
-          ship_srv()  { tar czf - server/*.mjs server/migrations/*.sql | $SSH "tar xzf - -C $BASE --no-same-owner"; }
-          restart()   { $SSH "mkdir -p $BASE/tmp && touch $BASE/tmp/restart.txt && echo RESTARTED"; }
-          echo '→ SSH auth (with retry)…'
-          if ! retry $SSH 'echo SSH_OK'; then
-            V=$(ssh -vv -i ~/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25 -o BatchMode=yes "$SSH_USER@$SSH_HOST" 'echo SSH_OK' 2>&1 || true)
-            echo "::error::post-auth tail: $(echo "$V" | tail -10 | tr '\n' '§')"
-            exit 1
-          fi
-          echo '→ shipping front-end (dist)…';     retry ship_dist          || { echo "::error::dist transfer failed after 5 tries"; exit 1; }
-          echo '→ shipping server code…';          retry ship_srv           || { echo "::error::server transfer failed after 5 tries"; exit 1; }
-          echo '→ restarting Node app…';           retry restart            || { echo "::error::restart failed after 5 tries"; exit 1; }
-          echo '✓ deployed + restarted'
+          date > restart.txt
+          CP="ssh -a -x -i $HOME/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25"
+          lftp -c "
+            set sftp:connect-program \"$CP\";
+            set sftp:auto-confirm yes;
+            set net:max-retries 4; set net:timeout 25; set net:reconnect-interval-base 6;
+            set mirror:parallel-transfer-count 1;
+            open -u \"$SSH_USER,\" sftp://$SSH_HOST;
+            mirror -R --delete --verbose dist/ \"$BASE/dist/\";
+            mirror -R --verbose --include-glob=*.mjs server/ \"$BASE/server/\";
+            mirror -R --verbose --include-glob=*.sql server/migrations/ \"$BASE/server/migrations/\";
+            put -O \"$BASE/tmp/\" restart.txt;
+            bye
+          "
+          echo '✓ deployed via SFTP + restart triggered'
 
       - name: Verify
         run: |
