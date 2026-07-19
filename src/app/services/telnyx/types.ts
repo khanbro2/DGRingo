@@ -98,6 +98,7 @@ export interface ThreadMessage {
 export interface ConversationThread {
   id: string;
   phone_number_id: string;         // owned number id this inbox belongs to
+  owned?: string;                  // owned number E.164 — matched to a PhoneNumber by digits
   contact: string;                 // external party E.164 (or display)
   contact_flag: string;
   unread: number;

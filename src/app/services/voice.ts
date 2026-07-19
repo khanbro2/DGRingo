@@ -33,6 +33,11 @@ export interface CallSnapshot {
   quality: CallQuality;
   /** epoch ms when the call became active (for the timer) */
   startedAt: number | null;
+  /** talk-time budget left (plan + wallet, pooled across profiles) as reported
+   *  by the server, and WHEN it was reported — the UI interpolates between
+   *  heartbeats. null = unknown/mock. */
+  remainingSec: number | null;
+  remainingAt: number | null;
   error?: string;
 }
 
@@ -75,8 +80,65 @@ let call: AnyCall | null = null;
 let myCaller: string | null = null;
 let myName: string | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
+let beatTimer: ReturnType<typeof setInterval> | null = null;
 let mockTimers: ReturnType<typeof setTimeout>[] = [];
 let lastStats: { lost: number; recv: number } | null = null;
+
+/* ------------------------------------------------- talk-time budget (server) */
+// The server pools plan minutes + wallet-funded overflow across every profile
+// of the account. We ask before dialing (gate) and every 15s during a call
+// (countdown + auto-cut when the pool runs dry).
+const API_ORIGIN_BASE = API_BASE.replace(/\/api\/telnyx$/, "");
+
+async function fetchRemaining(): Promise<{ remainingSec: number; allowed: boolean } | null> {
+  try {
+    const t = getToken();
+    const r = await fetch(`${API_ORIGIN_BASE}/api/voice/remaining`, {
+      headers: t ? { Authorization: `Bearer ${t}` } : {},
+    });
+    if (!r.ok) return null; // fail-open: never block calling on a server blip
+    return await r.json();
+  } catch { return null; }
+}
+
+async function sendHeartbeat(callId: string, ended = false): Promise<{ remainingSec: number; allowed: boolean } | null> {
+  try {
+    const t = getToken();
+    const r = await fetch(`${API_ORIGIN_BASE}/api/voice/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+      body: JSON.stringify({ callId, phase: ended ? "ended" : "active" }),
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+const OUT_OF_TIME_MSG = "Plan minutes used up — top up your wallet or upgrade to keep calling.";
+
+function startHeartbeat() {
+  if (beatTimer || !live) return;
+  const beat = async () => {
+    const id = call?.id;
+    if (!id || !snap || snap.phase !== "active") return;
+    const u = await sendHeartbeat(id);
+    if (!u || !snap || snap.phase !== "active") return;
+    emit({ remainingSec: u.remainingSec, remainingAt: Date.now() });
+    if (!u.allowed) {
+      // Budget exhausted mid-call → cut it and tell the user why.
+      hangupCall();
+      emit({ phase: "failed", error: OUT_OF_TIME_MSG });
+    }
+  };
+  beat(); // first beat immediately so the countdown appears right away
+  beatTimer = setInterval(beat, 15_000);
+}
+
+function stopHeartbeat() {
+  if (beatTimer) { clearInterval(beatTimer); beatTimer = null; }
+  const id = call?.id;
+  if (live && id) void sendHeartbeat(id, true);
+}
 
 // Fetch the connection's STATIC SIP credentials (username/password). We log in
 // with these — not an on-demand token — so the client also RECEIVES inbound
@@ -148,6 +210,7 @@ function onNotification(n: { type?: string; call?: AnyCall }) {
       phase: "incoming", direction: "inbound",
       contact: (c.options?.remoteCallerNumber || (c as { remoteCallerNumber?: string }).remoteCallerNumber || "Unknown caller") as string,
       callerNumber: myCaller, muted: false, quality: "unknown", startedAt: null,
+      remainingSec: null, remainingAt: null,
     });
     return;
   }
@@ -166,6 +229,7 @@ function applyState(state: string) {
     case "active":
       emit({ phase: "active", startedAt: snap.startedAt ?? Date.now() });
       startStatsPolling();
+      startHeartbeat();
       break;
     case "hangup":
     case "destroy":
@@ -209,6 +273,7 @@ function startStatsPolling() {
 /** Clear the CURRENT call but keep the client registered for future inbound. */
 function endCall() {
   if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  stopHeartbeat(); // tells the server this call stopped burning budget
   mockTimers.forEach(clearTimeout); mockTimers = [];
   lastStats = null;
   call = null;
@@ -237,7 +302,19 @@ export async function startCall(destination: string, callerNumber: string | null
     phase: "connecting", direction: "outbound", contact: destination,
     callerNumber: callerNumber || myCaller, muted: false,
     quality: live ? "unknown" : "excellent", startedAt: null,
+    remainingSec: null, remainingAt: null,
   });
+
+  // Gate BEFORE dialing: no talk-time budget left → don't place the call.
+  if (live) {
+    const rem = await fetchRemaining();
+    if (rem && !rem.allowed) {
+      endCall();
+      emit({ phase: "failed", error: OUT_OF_TIME_MSG });
+      return;
+    }
+    if (rem) emit({ remainingSec: rem.remainingSec, remainingAt: Date.now() });
+  }
 
   if (!live) {
     mockTimers.push(setTimeout(() => emit({ phase: "ringing" }), 700));
@@ -292,6 +369,6 @@ export function clearCall() { endCall(); snap = null; notify(); }
 // Dev-only: preview the incoming-call UI in mock mode (window.__dgIncoming()).
 if (!live && typeof window !== "undefined") {
   (window as unknown as { __dgIncoming?: (from?: string) => void }).__dgIncoming = (from = "+1 (415) 555-7788") => {
-    pushSnap({ phase: "incoming", direction: "inbound", contact: from, callerNumber: "+14155550182", muted: false, quality: "unknown", startedAt: null });
+    pushSnap({ phase: "incoming", direction: "inbound", contact: from, callerNumber: "+14155550182", muted: false, quality: "unknown", startedAt: null, remainingSec: null, remainingAt: null });
   };
 }

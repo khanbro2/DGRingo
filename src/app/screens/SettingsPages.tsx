@@ -3,7 +3,7 @@ import {
   ArrowLeft, ChevronRight, Search, Phone, MessageSquare, Plus, X,
   Mail, MessageCircle, HelpCircle, Send, Check, Volume2,
 } from "lucide-react";
-import { RINGTONES, getRingtone, setRingtone, previewRingtone, type RingtoneId } from "../services/ringtone";
+import { RINGTONES, getRingtone, setRingtone, previewRingtone, getSmsSoundOn, setSmsSoundOn, MESSAGE_TONES, getMessageTone, setMessageTone, previewMessageTone, type RingtoneId, type MessageToneId } from "../services/ringtone";
 import { C, gradients, font, radius } from "../core/theme";
 import { useApp } from "../store/AppStore";
 import { apiGetForwarding, apiSetForwarding, apiGetSupport, apiSendSupport, type ApiSupportMessage } from "../services/api";
@@ -152,6 +152,8 @@ export function CallForwardingPage({ onBack }: { onBack: () => void }) {
   const [fwd, setFwd] = useState("");
   const [vm, setVm] = useState(true);
   const [toneId, setToneId] = useState<RingtoneId>(() => getRingtone());
+  const [smsSound, setSmsSound] = useState<boolean>(() => getSmsSoundOn());
+  const [msgTone, setMsgTone] = useState<MessageToneId>(() => getMessageTone());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -209,6 +211,21 @@ export function CallForwardingPage({ onBack }: { onBack: () => void }) {
         ))}
       </Group>
       <p style={{ color: C.faint, fontSize: 11.5, padding: "0 24px 12px", marginTop: -6 }}>Tap a ringtone to hear it — your pick is used when a call rings.</p>
+
+      {/* Message tone — on/off + pick the incoming-SMS sound; tapping previews it. */}
+      <Group title="Message tone">
+        <Row label="Play a sound for new texts" sub={smsSound ? "On" : "Muted"} last={!smsSound}
+          onClick={() => { const next = !smsSound; setSmsSound(next); setSmsSoundOn(next); if (next) previewMessageTone(msgTone); }}>
+          {smsSound ? <Check size={17} color={C.blue} /> : <Volume2 size={15} color={C.faint} />}
+        </Row>
+        {smsSound && MESSAGE_TONES.map((m, i) => (
+          <Row key={m.id} label={m.name} sub={m.desc} last={i === MESSAGE_TONES.length - 1}
+            onClick={() => { setMessageTone(m.id); setMsgTone(m.id); previewMessageTone(m.id); }}>
+            {msgTone === m.id ? <Check size={17} color={C.blue} /> : <Volume2 size={15} color={C.faint} />}
+          </Row>
+        ))}
+      </Group>
+      <p style={{ color: C.faint, fontSize: 11.5, padding: "0 24px 12px", marginTop: -6 }}>Tap a tone to hear it. New texts play it while the app is open, and show a notification when it's in the background (allow notifications above).</p>
 
       <div style={{ padding: "4px 20px 20px" }}>
         <button onClick={save} disabled={saving || loading} style={{ ...primaryBtn, opacity: saving || loading ? 0.6 : 1 }}>

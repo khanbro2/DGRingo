@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react";
 import { AppProvider, useApp } from "./store/AppStore";
 import { colors as C, THEME_VARS } from "./core/theme";
 import { ThemeProvider } from "./core/theme-context";
@@ -7,18 +6,19 @@ import { PhoneGate } from "./MobileShell";
 import { DashboardShell } from "./DashboardShell";
 import { isNative } from "./native";
 
-/** True on desktop-width viewports (where the dashboard layout is used). */
-function useIsDesktop() {
-  const query = "(min-width: 1024px)";
-  const [desktop, setDesktop] = useState(() =>
-    typeof window !== "undefined" && window.matchMedia(query).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const onChange = () => setDesktop(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return desktop;
+/**
+ * True on REAL phones/tablets only — the device's primary pointer is a finger,
+ * or a mobile user-agent. Window WIDTH deliberately plays no part: shrinking a
+ * laptop window must never flip the web app into the phone UI (that lives
+ * behind the dashboard's "Mobile preview" toolbar button instead). Touch-screen
+ * laptops stay desktop too — their primary pointer is the trackpad/mouse.
+ */
+function isMobileDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia("(pointer: coarse)").matches ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  );
 }
 
 /**
@@ -28,11 +28,13 @@ function useIsDesktop() {
  * driven by the same store, so state stays perfectly in sync.
  */
 function Root() {
-  const isDesktop = useIsDesktop();
   const { state } = useApp();
   const authed = !!state.user && state.user.emailVerified !== false;
 
-  if (isDesktop && authed) return <DashboardShell />;
+  // Desktops/laptops ALWAYS get the dashboard once signed in — never the phone
+  // UI, no matter how small the window is. Phones/tablets and the native app
+  // get the phone experience.
+  if (authed && !isNative() && !isMobileDevice()) return <DashboardShell />;
 
   // Native (Capacitor) app: fill the real device screen — NO phone-mockup frame
   // or fake status bar (that chrome is only for the web/desktop preview, and on a

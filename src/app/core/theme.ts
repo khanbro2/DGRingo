@@ -46,6 +46,7 @@ export const THEME_VARS = `
     --dg-line:rgba(255,255,255,0.06); --dg-lineSoft:rgba(255,255,255,0.04);
     --dg-text:#eef0f6; --dg-muted:#8892aa; --dg-faint:#4d5a72;
   }
+  .dg-dialer-input::placeholder { color: var(--dg-faint); }
 `;
 
 export const gradients = {

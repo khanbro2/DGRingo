@@ -131,11 +131,16 @@ export const telnyx = {
   // no document upload for 10DLC.
   async registerBrand(data: BrandRegistration): Promise<Brand> {
     if (!live) return mock.registerBrand(data.displayName, data.entityType);
+    const sole = data.entityType === "SOLE_PROPRIETOR";
+    const isPublic = data.entityType === "PUBLIC_PROFIT";
     const r = await http<TSingle<Brand>>("/10dlc/brand", { method: "POST", body: {
       entityType: data.entityType,
       displayName: data.displayName,
       companyName: data.companyName,
-      ein: data.ein,
+      // Sole proprietors have no EIN; every other entity must supply it + its
+      // issuing country (TCR matches both against the CP-575 record).
+      ein: sole ? undefined : data.ein,
+      einIssuingCountry: sole ? undefined : (data.einIssuingCountry || data.country),
       vertical: data.vertical,
       email: data.email,
       phone: toE164(data.phone), // Telnyx requires strict +E.164 (no spaces/dashes)
@@ -145,6 +150,9 @@ export const telnyx = {
       state: data.state,
       postalCode: data.postalCode,
       country: data.country,
+      // Publicly-traded brands must give a ticker + exchange TCR can confirm.
+      stockSymbol: isPublic ? data.stockSymbol || undefined : undefined,
+      stockExchange: isPublic ? data.stockExchange || undefined : undefined,
     }});
     return { ...r.data, status: mapBrandStatus(r.data.status, (r.data as { identityStatus?: string }).identityStatus) };
   },
@@ -156,8 +164,21 @@ export const telnyx = {
       description: data.description,
       messageFlow: data.messageFlow,
       sample1: data.sample1,
-      sample2: data.sample2,
+      sample2: data.sample2 || undefined,
+      // Consent flags are always on; the keywords/auto-replies come from the form.
       subscriberOptin: true, subscriberOptout: true, subscriberHelp: true,
+      optinKeywords: data.optinKeywords || undefined,
+      optinMessage: data.optinMessage || undefined,
+      optoutKeywords: data.optoutKeywords || undefined,
+      optoutMessage: data.optoutMessage || undefined,
+      helpKeywords: data.helpKeywords || undefined,
+      helpMessage: data.helpMessage || undefined,
+      // Content attributes carriers screen for.
+      embeddedLink: data.embeddedLink,
+      embeddedPhone: data.embeddedPhone,
+      ageGated: data.ageGated,
+      directLending: data.directLending,
+      affiliateMarketing: data.affiliateMarketing,
     }});
     return r.data;
   },

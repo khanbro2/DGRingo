@@ -37,10 +37,16 @@ export function InCallScreen({ desktop }: { desktop?: boolean }) {
   }, [activeCall?.phase]);
 
   if (!activeCall) return null;
-  const { phase, contact, callerNumber, muted, quality, startedAt, error } = activeCall;
+  const { phase, contact, callerNumber, muted, quality, startedAt, error, remainingSec, remainingAt } = activeCall;
 
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   const timer = `${Math.floor(elapsed / 60)}:${(elapsed % 60).toString().padStart(2, "0")}`;
+
+  // Talk-time budget countdown (plan + wallet, pooled across the account's open
+  // profiles). Server reports it via heartbeats; interpolate between beats.
+  const remLive = remainingSec != null && remainingAt != null
+    ? Math.max(0, remainingSec - Math.floor((now - remainingAt) / 1000))
+    : null;
 
   const incoming = phase === "incoming";
   const statusText =
@@ -90,6 +96,7 @@ export function InCallScreen({ desktop }: { desktop?: boolean }) {
           <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 12.5, marginTop: 10 }}>via {callerNumber}</p>
         )}
         {phase === "active" && <QualityPill quality={quality} />}
+        {phase === "active" && remLive != null && <TimeLeftPill seconds={remLive} />}
         {error && <p style={{ color: "#fca5a5", fontSize: 13, marginTop: 14, lineHeight: 1.5, maxWidth: 320, marginInline: "auto" }}>{error}</p>}
       </div>
 
@@ -149,6 +156,23 @@ const QUALITY: Record<CallQuality, { label: string; color: string; bars: number 
   poor:      { label: "Weak signal", color: "#ef4444", bars: 1 },
   unknown:   { label: "Measuring…", color: "rgba(255,255,255,0.5)", bars: 0 },
 };
+
+/** Countdown of the account's remaining talk-time (plan minutes + wallet-funded
+ *  overflow). Green normally, amber under 5 min, red under 1 min — at 0 the
+ *  voice service hangs the call up. */
+function TimeLeftPill({ seconds }: { seconds: number }) {
+  const color = seconds <= 60 ? "#ef4444" : seconds <= 300 ? "#f59e0b" : "rgba(255,255,255,0.6)";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const label = h > 0 ? `${h}h ${m}m` : `${m}:${s.toString().padStart(2, "0")}`;
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 10, marginLeft: 8, padding: "6px 12px", borderRadius: 999, background: "rgba(255,255,255,0.08)", border: `1px solid ${seconds <= 300 ? color : "rgba(255,255,255,0.12)"}` }}>
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: color }} />
+      <span style={{ color, fontSize: 12, fontWeight: 700, fontFamily: font.mono }}>{label} left</span>
+    </div>
+  );
+}
 
 function QualityPill({ quality }: { quality: CallQuality }) {
   const q = QUALITY[quality] ?? QUALITY.unknown;

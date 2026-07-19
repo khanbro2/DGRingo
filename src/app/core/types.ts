@@ -146,31 +146,52 @@ export interface BrandInfo {
   campaignId?: string;
 }
 
-/** Business details collected for 10DLC brand registration — the A2P "KYC". No
- *  document upload: carriers validate the EIN/registration number automatically. */
+/** Business details collected for 10DLC brand registration — the A2P "KYC".
+ *  No document upload: TCR (The Campaign Registry) validates the EIN/company
+ *  name/address against IRS records automatically, so every value must match the
+ *  business's EIN confirmation letter (CP-575) EXACTLY or the brand comes back
+ *  UNVERIFIED. Field names mirror Telnyx's POST /10dlc/brand body. */
 export interface BrandRegistration {
   entityType: "PRIVATE_PROFIT" | "PUBLIC_PROFIT" | "NON_PROFIT" | "GOVERNMENT" | "SOLE_PROPRIETOR";
   displayName: string;
   companyName: string;
-  ein: string;          // Tax ID / EIN (or local business registration number)
-  vertical: string;     // industry vertical
+  ein: string;               // Tax ID / EIN — required for every entity except SOLE_PROPRIETOR
+  einIssuingCountry: string; // ISO-2 country that issued the EIN (required with `ein`)
+  vertical: string;          // industry vertical (TCR enum)
   email: string;
-  phone: string;        // E.164 contact number
+  phone: string;             // E.164 contact number
   website: string;
   street: string;
   city: string;
   state: string;
   postalCode: string;
-  country: string;      // ISO-2
+  country: string;           // ISO-2 business country (US/CA for 10DLC)
+  stockSymbol: string;       // required only when entityType = PUBLIC_PROFIT
+  stockExchange: string;     // required only when entityType = PUBLIC_PROFIT
 }
 
-/** Campaign details for 10DLC (use case + consent + sample messages). */
+/** Campaign details for 10DLC (use case + consent + sample messages). Field
+ *  names mirror Telnyx's POST /10dlc/campaignBuilder body. Carriers reject
+ *  campaigns without opt-in/opt-out/HELP keywords, so those are collected too. */
 export interface CampaignRegistration {
   usecase: string;
   description: string;
+  messageFlow: string;       // how subscriber consent (opt-in) is collected
   sample1: string;
-  sample2: string;
-  messageFlow: string;  // how subscriber consent (opt-in) is collected
+  sample2: string;           // MARKETING requires ≥2 samples
+  // Consent keywords + auto-replies (STOP/HELP/START compliance).
+  optinKeywords: string;
+  optinMessage: string;
+  optoutKeywords: string;
+  optoutMessage: string;
+  helpKeywords: string;
+  helpMessage: string;
+  // Content attributes carriers ask about (affect approval + throughput).
+  embeddedLink: boolean;
+  embeddedPhone: boolean;
+  ageGated: boolean;
+  directLending: boolean;
+  affiliateMarketing: boolean;
 }
 
 /** A document a number's country regulations require (KYC for the number). */

@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { createHmac, timingSafeEqual, createPublicKey, verify as edVerify } from "node:crypto";
 import { numberPrice, bundleCharge } from "./plans.mjs";
 import { sendPush, vapidPublicKey, webPushConfigured } from "./webpush.mjs";
-import { createCheckoutSession as stripeCheckout, verifyWebhook as stripeVerify, publishableKey as stripePubKey, stripeConfigured } from "./stripe.mjs";
+import { createCheckoutSession as stripeCheckout, verifyWebhook as stripeVerify, publishableKey as stripePubKey, stripeConfigured, createCustomer as stripeCreateCustomer, createSetupSession as stripeSetupSession, cardFromIntent as stripeCardFromIntent } from "./stripe.mjs";
 
 // Resolve the app root and load env from a `.env` there (DB creds + all secrets)
 // if present — keeps the deployment self-contained and SSH-configurable.
@@ -430,6 +430,29 @@ async function getTexmlAppId() {
   return (TEXML_APP = cj.data.id);
 }
 
+// Inbound SMS reach us only if the number's MESSAGING PROFILE has its webhook_url
+// pointed at /webhooks/telnyx (the mirror of getTexmlAppId's voice_url for calls).
+// Numbers are provisioned onto VITE_TELNYX_MESSAGING_PROFILE_ID, so we (re)point
+// that profile's inbound webhook at boot — otherwise texts to owned numbers are
+// silently dropped by Telnyx (there's nowhere to deliver message.received).
+let MSG_PROFILE_OK = false;
+async function ensureMessagingProfile() {
+  if (MSG_PROFILE_OK) return;
+  const mp = process.env.VITE_TELNYX_MESSAGING_PROFILE_ID;
+  if (!mp) { console.warn("⚠ VITE_TELNYX_MESSAGING_PROFILE_ID not set — inbound SMS webhook can't be configured."); return; }
+  const want = `${PUBLIC_BASE}/webhooks/telnyx`;
+  const r = await telnyxFetch(`/messaging_profiles/${mp}`);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { console.error("messaging profile fetch failed:", j?.errors?.[0]?.detail || r.status); return; }
+  const cur = j?.data?.webhook_url || null;
+  if (cur === want && j?.data?.webhook_api_version === "2") { MSG_PROFILE_OK = true; return; }
+  const pr = await telnyxFetch(`/messaging_profiles/${mp}`, { method: "PATCH", body: JSON.stringify({
+    webhook_url: want, webhook_api_version: "2",
+  }) });
+  if (pr.ok) { MSG_PROFILE_OK = true; console.log(`✓ inbound SMS webhook set on messaging profile → ${want}`); }
+  else { const pj = await pr.json().catch(() => ({})); console.error("could not set messaging webhook:", pj?.errors?.[0]?.detail || pr.status); }
+}
+
 const xmlEsc = (s) => String(s || "").replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
 const texmlResponse = (inner) => `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${inner}\n</Response>`;
 
@@ -453,12 +476,23 @@ async function inboundTeXML({ stage, to, from }) {
   // Number isn't ours (or DB down) → straight to a graceful voicemail/goodbye.
   if (!owner) return texmlResponse(`  <Say voice="Polly.Joanna">This number is not available right now. Goodbye.</Say>\n  <Hangup/>`);
 
+  // Talk-time budget (plan minutes left + wallet-funded overflow, minus calls
+  // already burning). Out of budget → don't ring anything billable; go straight
+  // to voicemail. Otherwise cap every <Dial> leg with timeLimit so Telnyx CUTS
+  // the call when the budget runs out — even mid-conversation.
+  let capSec = 14400; // Telnyx max 4h
+  try {
+    const rem = await db.voiceRemainingSec(owner.userId, liveElapsedSec(owner.userId));
+    if (rem < 30) return voicemailTeXML(owner, to, from);
+    capSec = Math.min(capSec, rem);
+  } catch { /* budget check is best-effort — never kill inbound on a DB blip */ }
+
   const qs = (s) => `${PUBLIC_BASE}/webhooks/texml?stage=${s}&to=${encodeURIComponent(to)}&from=${encodeURIComponent(from)}`;
 
   // Stage 1: ring the in-app WebRTC softphone (if the user has a SIP identity).
   if (stage === "start" && owner.sipUsername) {
     return texmlResponse(
-      `  <Dial timeout="30" answerOnBridge="true" callerId="${xmlEsc(from)}" action="${xmlEsc(qs("fwd"))}" method="POST">\n` +
+      `  <Dial timeout="30" timeLimit="${capSec}" answerOnBridge="true" callerId="${xmlEsc(from)}" action="${xmlEsc(qs("fwd"))}" method="POST">\n` +
       `    <Sip>sip:${xmlEsc(owner.sipUsername)}@sip.telnyx.com</Sip>\n` +
       `  </Dial>`
     );
@@ -466,7 +500,7 @@ async function inboundTeXML({ stage, to, from }) {
   // Stage 2: forward to the user's real cellphone (if set).
   if ((stage === "start" || stage === "fwd") && owner.forwardNumber) {
     return texmlResponse(
-      `  <Dial timeout="25" callerId="${xmlEsc(to)}" action="${xmlEsc(qs("vm"))}" method="POST">\n` +
+      `  <Dial timeout="25" timeLimit="${capSec}" callerId="${xmlEsc(to)}" action="${xmlEsc(qs("vm"))}" method="POST">\n` +
       `    <Number>${xmlEsc(owner.forwardNumber)}</Number>\n` +
       `  </Dial>`
     );
@@ -488,9 +522,63 @@ async function notifyIncomingCall(userId, from) {
   } catch (e) { console.error("notifyIncomingCall:", e.message); }
 }
 
+/** Web-push a "new message" alert to a user's browsers, so a backgrounded or
+ *  closed tab still notifies on inbound SMS (the service worker shows it). */
+async function notifyIncomingSms(userId, from, text) {
+  if (!db || !webPushConfigured()) return;
+  try {
+    const subs = await db.getPushSubscriptions(userId);
+    const body = text ? (text.length > 120 ? `${text.slice(0, 117)}…` : text) : "You have a new message";
+    await Promise.all(subs.map(async (s) => {
+      const r = await sendPush(s, { type: "sms", title: `New message from ${from || "someone"}`, body, from: from || "" });
+      if (r.gone) await db.deletePushSubscription(s.endpoint).catch(() => {});
+    }));
+  } catch (e) { console.error("notifyIncomingSms:", e.message); }
+}
+
+/* ---------------------------------------------------- live-call usage guard */
+// In-memory registry of calls in progress, pooled per user across every
+// browser/profile: uid → Map(callId → {startedAt, lastBeat}). Browsers report
+// via POST /api/voice/heartbeat every ~15s; entries that miss 2 beats are
+// pruned. Powers the pre-call gate, the in-call countdown and the auto-cut.
+const liveCalls = new Map();
+const HEARTBEAT_STALE_MS = 75_000;
+
+/** Seconds of talk-time currently burning across ALL of a user's live calls. */
+function liveElapsedSec(uid) {
+  const calls = liveCalls.get(uid);
+  if (!calls) return 0;
+  const now = Date.now();
+  let sec = 0;
+  for (const [id, c] of calls) {
+    if (now - c.lastBeat > HEARTBEAT_STALE_MS) { calls.delete(id); continue; }
+    sec += (now - c.startedAt) / 1000;
+  }
+  if (calls.size === 0) liveCalls.delete(uid);
+  return Math.floor(sec);
+}
+
+function beatCall(uid, callId, ended = false) {
+  let calls = liveCalls.get(uid);
+  if (ended) { if (calls) { calls.delete(callId); if (!calls.size) liveCalls.delete(uid); } return; }
+  if (!calls) { calls = new Map(); liveCalls.set(uid, calls); }
+  const now = Date.now();
+  const cur = calls.get(callId);
+  if (cur) cur.lastBeat = now;
+  else calls.set(callId, { startedAt: now, lastBeat: now });
+}
+
+/** Remaining affordable talk-time for a user, minus what's burning right now. */
+async function voiceRemaining(uid) {
+  const remainingSec = await db.voiceRemainingSec(uid, liveElapsedSec(uid));
+  return { remainingSec, allowed: remainingSec > 0 };
+}
+
 /** Place a Telnyx number order + record ownership + log it. Throws on failure.
  *  Shared by the wallet buy route and the Stripe webhook (card fulfilment). */
 async function orderTelnyxNumber(uid, phoneNumber, kind = "local", { free = false, amount = 0 } = {}) {
+  // Make sure the messaging profile can deliver inbound SMS for this new number.
+  await ensureMessagingProfile().catch(() => {});
   const voiceConn = await getTexmlAppId().catch(() =>
     getSipConnectionId().catch(() => process.env.VITE_TELNYX_CONNECTION_ID));
   const r = await telnyxFetch("/number_orders", { method: "POST", body: JSON.stringify({
@@ -526,7 +614,13 @@ async function fulfilStripe(uid, m, sessionId) {
       await db.logActivity(uid, { kind: "wallet", title: "Plan activated", body: `Your ${b.name} plan (${cycle}) is now active.` });
     }
   }
-  if ((kind === "plan_number" || kind === "number") && m.phone) {
+  if (kind === "plan_number" || kind === "number") {
+    if (!m.phone) {
+      // The customer PAID for a number this session — never skip silently.
+      console.error(`[stripe] ${kind} checkout ${sessionId} for uid=${uid} has NO phone in metadata — number NOT provisioned, needs manual follow-up`);
+      await db.logActivity(uid, { kind: "system", title: "Number purchase needs attention", body: "We couldn't provision your number automatically. Support has been notified — you will not be charged twice." }).catch(() => {});
+      return;
+    }
     const nkind = m.numberKind === "tollfree" ? "tollfree" : "local";
     await orderTelnyxNumber(uid, m.phone, nkind, { free: false, amount: numberPrice(nkind) });
   }
@@ -596,6 +690,8 @@ async function conversationsPayload() {
     out.push({
       id: `thr_${digits(t.owned)}_${digits(t.contact)}`,
       phone_number_id: await ownedNumberId(t.owned),
+      owned: t.owned, // the owned E.164 — client matches threads to numbers by DIGITS
+                      // (opaque Telnyx ids differ between the number-order and phone_number resources)
       contact: t.contact,
       contact_flag: flagFor(t.contact),
       unread: t.unread,
@@ -616,6 +712,10 @@ function handleWebhook(payload) {
     const owned = p.to?.[0]?.phone_number;
     recordMessage({ owned, contact, direction: "inbound", text: p.text, telnyxId: p.id });
     console.log(`📥 inbound SMS ${contact} → ${owned}`);
+    // Push-alert the number's owner so a backgrounded/closed tab still notifies.
+    if (db && owned) db.findNumberOwner(owned)
+      .then((o) => { if (o) notifyIncomingSms(o.userId, contact, p.text); })
+      .catch(() => {});
   } else if (type === "message.sent" || type === "message.finalized") {
     const status = p.to?.[0]?.status ?? "sent";
     updateStatus(p.id, status);
@@ -680,6 +780,17 @@ createServer(async (req, res) => {
       console.error(`☎ TEXML stage=${stage} to=${to} from=${from} dialStatus=${dialStatus} sip=${own?.sipUsername || "-"} fwd=${own?.forwardNumber || "-"} vm=${own?.voicemailEnabled} params=${JSON.stringify(allParams)}`);
       // On the first hop, web-push the owner so a backgrounded browser tab alerts.
       if (stage === "start" && own) notifyIncomingCall(own.userId, from).catch(() => {});
+      // Meter FORWARDED-to-cellphone legs server-side (the browser is not in the
+      // call, so nothing else logs them). stage=vm is the forward <Dial>'s action
+      // callback; in-app SIP legs (stage=fwd) are logged/metered by the app.
+      if (stage === "vm" && own && (dialStatus === "completed" || dialStatus === "answered")) {
+        const durSec = Number(p.get("DialCallDuration") || 0) || 0;
+        if (durSec > 0) {
+          const mins = Math.ceil(durSec / 60);
+          db.applyUsage(own.userId, { minutes: mins }).catch((e) => console.error("applyUsage(fwd):", e.message));
+          db.logCall(own.userId, { contact: from, direction: "incoming", status: "Forwarded call", duration: `${Math.floor(durSec / 60)}:${String(durSec % 60).padStart(2, "0")}`, via: to }).catch(() => {});
+        }
+      }
       // If a prior <Dial> leg was answered & completed, stop — don't fall through
       // to voicemail after a real conversation.
       if (dialStatus === "completed" || dialStatus === "answered") {
@@ -709,15 +820,38 @@ createServer(async (req, res) => {
     if (evt.type !== "checkout.session.completed") return send(res, 200, { ok: true, ignored: evt.type });
     if (!db) return send(res, 503, { error: "Database not configured" });
     const session = evt.data?.object || {};
-    if (session.payment_status && session.payment_status !== "paid") return send(res, 200, { ok: true, unpaid: true });
     const m = session.metadata || {};
     const uid = Number(m.uid) || 0;
     if (!uid) return send(res, 200, { ok: true, nouid: true });
+    // SETUP-mode session (change/add card — nothing was charged): save the new
+    // default card, done. Must run BEFORE the paid check (setup sessions report
+    // payment_status "no_payment_required").
+    if (session.mode === "setup" || m.kind === "setcard") {
+      try {
+        if (session.setup_intent) {
+          const card = await stripeCardFromIntent(session.setup_intent);
+          if (card) {
+            await db.saveBillingProfile(uid, { customerId: String(session.customer || ""), ...card, paymentMethodId: card.pmId });
+            await db.logActivity(uid, { kind: "wallet", title: "Payment method updated", body: `Your ${card.brand || "card"} •••• ${card.last4} is now the card on file for renewals.` });
+          }
+        }
+      } catch (e) { console.error("[stripe] setcard failed:", e.message); }
+      return send(res, 200, { ok: true, setup: true });
+    }
+    if (session.payment_status && session.payment_status !== "paid") return send(res, 200, { ok: true, unpaid: true });
     let claimed = false;
     try {
       claimed = await db.recordFreemiusEvent(evt.id); // reuse the event-dedup table
       if (!claimed) return send(res, 200, { ok: true, duplicate: true });
       await fulfilStripe(uid, m, session.id || evt.id);
+      // Card-on-file: remember the customer + masked card so renewals can charge
+      // it DIRECTLY and the app can show "VISA •••• 4242". Best-effort.
+      try {
+        if (session.customer && session.payment_intent) {
+          const card = await stripeCardFromIntent(session.payment_intent);
+          await db.saveBillingProfile(uid, { customerId: String(session.customer), ...(card ? { ...card, paymentMethodId: card.pmId } : {}) });
+        }
+      } catch (e) { console.error("[stripe] card capture failed:", e.message); }
       return send(res, 200, { ok: true });
     } catch (e) {
       if (claimed) await db.unrecordFreemiusEvent(evt.id);
@@ -739,6 +873,12 @@ createServer(async (req, res) => {
     const cancelUrl = `${base}/app?pay=cancel`;
     let email = null; try { const u = await db.getUser?.(uid); email = u?.email || null; } catch { /* optional */ }
     try {
+      // Normalize the picked number to strict E.164 up front; a number checkout
+      // without a number must fail HERE, not silently charge and never provision.
+      const pickedPhone = String(g.phone || "").replace(/[^\d+]/g, "");
+      if ((g.kind === "plan_number" || g.kind === "number") && !pickedPhone) {
+        return send(res, 400, { error: "No phone number selected" });
+      }
       let lineItems, metadata = { uid: String(uid) };
       if (g.kind === "topup") {
         const amt = Math.max(1, Math.min(1000, Number(g.amount) || 0)); // clamp $1–$1000
@@ -752,21 +892,66 @@ createServer(async (req, res) => {
         metadata = { ...metadata, kind: g.kind, tier: charge.bundle.id, cycle };
         if (g.kind === "plan_number") {
           const nkind = g.numberKind === "tollfree" ? "tollfree" : "local";
-          lineItems.push({ name: `Phone number ${g.phone || ""}`, amountCents: Math.round(numberPrice(nkind) * 100) });
-          metadata = { ...metadata, phone: String(g.phone || ""), numberKind: nkind };
+          lineItems.push({ name: `Phone number ${pickedPhone}`, amountCents: Math.round(numberPrice(nkind) * 100) });
+          metadata = { ...metadata, phone: pickedPhone, numberKind: nkind };
         }
       } else if (g.kind === "number") {
         const nkind = g.numberKind === "tollfree" ? "tollfree" : "local";
-        lineItems = [{ name: `Phone number ${g.phone || ""}`, amountCents: Math.round(numberPrice(nkind) * 100) }];
-        metadata = { ...metadata, kind: "number", phone: String(g.phone || ""), numberKind: nkind };
+        lineItems = [{ name: `Phone number ${pickedPhone}`, amountCents: Math.round(numberPrice(nkind) * 100) }];
+        metadata = { ...metadata, kind: "number", phone: pickedPhone, numberKind: nkind };
       } else {
         return send(res, 400, { error: "Unknown checkout type" });
       }
-      const sess = await stripeCheckout({ lineItems, metadata, successUrl, cancelUrl, customerEmail: email });
+      // Reuse the saved Stripe customer so the card stays attached to one identity.
+      let customerId = null;
+      try { customerId = (await db.getBillingProfile?.(uid))?.customerId || null; } catch { /* optional */ }
+      const sess = await stripeCheckout({ lineItems, metadata, successUrl, cancelUrl, customerEmail: email, customerId });
       return send(res, 200, { url: sess.url, id: sess.id });
     } catch (e) {
       return send(res, 502, { error: e.message || "Could not start checkout" });
     }
+  }
+
+  // 2b-2) Billing — the saved (masked) card + a hosted flow to change it.
+  //   GET  /api/billing/payment-method → { card: {brand,last4,expMonth,expYear} | null }
+  //   POST /api/billing/change-card    → { url } (Stripe setup-mode Checkout)
+  if (req.url?.startsWith("/api/billing/payment-method") && req.method === "GET") {
+    if (!db) return send(res, 503, { error: "Database not configured" });
+    const uid = db.verifyToken(bearer(req));
+    if (!uid) return send(res, 401, { error: "Not authenticated" });
+    try {
+      const bp = await db.getBillingProfile(uid);
+      const card = bp?.paymentMethodId
+        ? { brand: bp.brand, last4: bp.last4, expMonth: bp.expMonth, expYear: bp.expYear }
+        : null;
+      return send(res, 200, { card });
+    } catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  if (req.url?.startsWith("/api/billing/change-card") && req.method === "POST") {
+    if (!db) return send(res, 503, { error: "Database not configured" });
+    const uid = db.verifyToken(bearer(req));
+    if (!uid) return send(res, 401, { error: "Not authenticated" });
+    if (!stripeConfigured()) return send(res, 503, { error: "Card payments are not configured" });
+    try {
+      // A setup session needs a customer to attach the card to — create one now
+      // if the user has never paid by card before.
+      let bp = await db.getBillingProfile(uid);
+      if (!bp?.customerId) {
+        let email = null, name = null;
+        try { const u = await db.getUser?.(uid); email = u?.email || null; name = u?.name || null; } catch { /* optional */ }
+        const cust = await stripeCreateCustomer({ email, name, metadata: { uid: String(uid) } });
+        await db.saveBillingProfile(uid, { customerId: cust.id });
+        bp = { customerId: cust.id };
+      }
+      const base = `https://${req.headers.host}`;
+      const sess = await stripeSetupSession({
+        customerId: bp.customerId,
+        metadata: { uid: String(uid), kind: "setcard" },
+        successUrl: `${base}/app?card=saved`,
+        cancelUrl: `${base}/app?card=cancel`,
+      });
+      return send(res, 200, { url: sess.url, id: sess.id });
+    } catch (e) { return send(res, 502, { error: e.message || "Could not start card update" }); }
   }
 
   // 2c) Admin (Control Hub) auth — gates the dashboard behind a password.
@@ -1080,6 +1265,31 @@ createServer(async (req, res) => {
     }
   }
 
+  // 3e-0) Voice usage guard — pooled talk-time budget across all profiles.
+  //   GET  /api/voice/remaining  → checked BEFORE dialing (block at 0)
+  //   POST /api/voice/heartbeat  → every ~15s during a call {callId, phase};
+  //                                response drives the countdown + auto-cut.
+  if (req.url?.startsWith("/api/voice/remaining") && req.method === "GET") {
+    if (!db) return send(res, 503, { error: "Database not configured" });
+    const uid = db.verifyToken(bearer(req));
+    if (!uid) return send(res, 401, { error: "Not authenticated" });
+    try { return send(res, 200, await voiceRemaining(uid)); }
+    catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  if (req.url?.startsWith("/api/voice/heartbeat") && req.method === "POST") {
+    if (!db) return send(res, 503, { error: "Database not configured" });
+    const uid = db.verifyToken(bearer(req));
+    if (!uid) return send(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    let d; try { d = JSON.parse(body || "{}"); } catch { d = {}; }
+    const callId = String(d.callId || "");
+    if (!callId) return send(res, 400, { error: "callId required" });
+    try {
+      beatCall(uid, callId, d.phase === "ended");
+      return send(res, 200, await voiceRemaining(uid));
+    } catch (e) { return send(res, 500, { error: e.message }); }
+  }
+
   // 3e) Call history — persisted per-user so Recents survive a refresh (WebRTC
   //     calls aren't reliably in Telnyx CDRs). GET lists; POST logs one call.
   if (req.url?.startsWith("/api/calls")) {
@@ -1246,13 +1456,20 @@ createServer(async (req, res) => {
   console.log(`  app API  : http://localhost:${PORT}${PREFIX}  → ${TELNYX}`);
   console.log(`  webhooks : http://localhost:${PORT}/webhooks/telnyx`);
 
+  // Point the messaging profile's inbound webhook at us so texts to owned
+  // numbers actually arrive (best-effort — a Telnyx blip must not crash boot).
+  if (KEY) ensureMessagingProfile().catch((e) => console.error("ensureMessagingProfile:", e.message));
+
   // Auto-renew engine: charge due bundle subscriptions from the wallet, at boot
   // and hourly thereafter. Lazy renewal on access (getSubscription) covers the
   // gaps between ticks for active users.
   if (db?.renewDueSubscriptions) {
-    const runRenewals = () => db.renewDueSubscriptions()
-      .then((n) => { if (n) console.log(`↻ auto-renewed ${n} subscription(s)`); })
-      .catch((e) => console.error("renewal sweep failed:", e.message));
+    const runRenewals = () => Promise.allSettled([
+      db.renewDueSubscriptions()
+        .then((n) => { if (n) console.log(`↻ auto-renewed ${n} subscription(s)`); }),
+      db.renewDueNumbers?.()
+        .then((n) => { if (n) console.log(`↻ auto-renewed ${n} number rental(s)`); }),
+    ]).then((rs) => rs.forEach((r) => { if (r.status === "rejected") console.error("renewal sweep failed:", r.reason?.message); }));
     runRenewals();
     setInterval(runRenewals, 60 * 60 * 1000).unref?.();
   }

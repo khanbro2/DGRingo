@@ -15,7 +15,8 @@
  */
 import mysql from "mysql2/promise";
 import { randomBytes, scryptSync, timingSafeEqual, createHmac, createHash } from "node:crypto";
-import { PAYG_RELOAD, OVERFLOW_RATES, bundleFor } from "./plans.mjs";
+import { PAYG_RELOAD, OVERFLOW_RATES, NUMBER_RENTAL, bundleFor } from "./plans.mjs";
+import { chargeOffSession, stripeConfigured } from "./stripe.mjs";
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
@@ -337,38 +338,106 @@ const shapeSub = (s) => s ? {
  * PayPal billing agreement / Subscriptions API (a future upgrade); until then
  * users keep the wallet topped up (by card) and renewals draw from it.
  */
-async function tryRenew(s) {
-  const amount = Number(s.renew_amount || 0);
-  const c = s.cycle === "annual" ? "annual" : "monthly";
+/* ------------------------------------------------------------ card on file */
+/** The user's saved Stripe customer + masked default card (or null). */
+export async function getBillingProfile(uid) {
+  const [rows] = await pool.query("SELECT * FROM billing_profiles WHERE user_id = ?", [uid]);
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    customerId: r.stripe_customer_id || "",
+    paymentMethodId: r.payment_method_id || "",
+    brand: r.brand || "", last4: r.last4 || "",
+    expMonth: Number(r.exp_month) || 0, expYear: Number(r.exp_year) || 0,
+  };
+}
+
+/** Upsert the saved customer/card. Card fields optional (customer-only save). */
+export async function saveBillingProfile(uid, { customerId, paymentMethodId, brand, last4, expMonth, expYear } = {}) {
+  await pool.query(
+    `INSERT INTO billing_profiles (user_id, stripe_customer_id, payment_method_id, brand, last4, exp_month, exp_year)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         stripe_customer_id = IF(VALUES(stripe_customer_id) <> '', VALUES(stripe_customer_id), stripe_customer_id),
+         payment_method_id  = IF(VALUES(payment_method_id)  <> '', VALUES(payment_method_id),  payment_method_id),
+         brand     = IF(VALUES(payment_method_id) <> '', VALUES(brand),     brand),
+         last4     = IF(VALUES(payment_method_id) <> '', VALUES(last4),     last4),
+         exp_month = IF(VALUES(payment_method_id) <> '', VALUES(exp_month), exp_month),
+         exp_year  = IF(VALUES(payment_method_id) <> '', VALUES(exp_year),  exp_year)`,
+    [uid, customerId || "", paymentMethodId || "", brand || "", last4 || "", Number(expMonth) || 0, Number(expYear) || 0]
+  );
+}
+
+/** Charge the user's saved card off-session. Returns true when the charge
+ *  succeeded, false when there's no usable card or Stripe declined it. */
+async function chargeSavedCard(uid, amount, description) {
+  if (!stripeConfigured()) return false;
+  const bp = await getBillingProfile(uid);
+  if (!bp?.customerId || !bp?.paymentMethodId) return false;
+  try {
+    await chargeOffSession({
+      customerId: bp.customerId, paymentMethodId: bp.paymentMethodId,
+      amountCents: Math.round(amount * 100), description,
+      metadata: { uid: String(uid), kind: "renewal" },
+    });
+    return true;
+  } catch (e) {
+    console.error(`[billing] off-session charge failed for uid=${uid}:`, e.message);
+    return false;
+  }
+}
+
+/** Atomic wallet debit; returns true when the balance covered it. */
+async function debitIfEnough(uid, amount, label) {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    // Atomic wallet debit for the renewal.
     const [r] = await conn.query(
       "UPDATE users SET wallet_balance = wallet_balance - ? WHERE id = ? AND wallet_balance >= ?",
-      [amount, s.user_id, amount]
+      [amount, uid, amount]
     );
-    if (r.affectedRows === 0) {
-      // Not enough balance → mark past_due so the app can prompt a top-up.
-      await conn.query("UPDATE subscriptions SET status = 'past_due' WHERE id = ?", [s.id]);
-      await conn.commit();
-    } else {
-      await conn.query(
-        "INSERT INTO wallet_transactions (user_id, amount, label, kind) VALUES (?, ?, ?, 'charge')",
-        [s.user_id, -amount, `Auto-renew — ${s.tier} plan (${c})`]
-      );
-      const nextEnd = Number(s.period_end) + (CYCLE_MS[c] || CYCLE_MS.monthly);
-      await conn.query(
-        "UPDATE subscriptions SET status = 'active', period_end = ?, minutes_used = 0, sms_used = 0 WHERE id = ?",
-        [nextEnd, s.id]
-      );
-      await conn.commit();
-    }
+    if (r.affectedRows === 0) { await conn.rollback(); return false; }
+    await conn.query(
+      "INSERT INTO wallet_transactions (user_id, amount, label, kind) VALUES (?, ?, ?, 'charge')",
+      [uid, -amount, label]
+    );
+    await conn.commit();
+    return true;
   } catch (e) {
     await conn.rollback();
     throw e;
   } finally {
     conn.release();
+  }
+}
+
+/** Renew one due subscription. CARD-paid plans charge the saved card DIRECTLY
+ *  (wallet untouched); wallet-paid plans debit the wallet. Either path falls
+ *  back to the other before going past_due. */
+async function tryRenew(s) {
+  const amount = Number(s.renew_amount || 0);
+  const c = s.cycle === "annual" ? "annual" : "monthly";
+  const label = `Auto-renew — ${s.tier} plan (${c})`;
+
+  let paid = false, how = "";
+  const cardFirst = s.pay_method === "card";
+  if (cardFirst && await chargeSavedCard(s.user_id, amount, label)) { paid = true; how = "card"; }
+  if (!paid && await debitIfEnough(s.user_id, amount, label)) { paid = true; how = "wallet"; }
+  if (!paid && !cardFirst && await chargeSavedCard(s.user_id, amount, label)) { paid = true; how = "card"; }
+
+  if (!paid) {
+    await pool.query("UPDATE subscriptions SET status = 'past_due' WHERE id = ?", [s.id]);
+    await logActivity(s.user_id, { kind: "wallet", title: "Plan renewal failed", body: `We couldn't renew your ${s.tier} plan — your card was declined or missing and the wallet is short. Top up or update your card to restore service.` }).catch(() => {});
+  } else {
+    const nextEnd = Number(s.period_end) + (CYCLE_MS[c] || CYCLE_MS.monthly);
+    await pool.query(
+      "UPDATE subscriptions SET status = 'active', period_end = ?, minutes_used = 0, sms_used = 0 WHERE id = ?",
+      [nextEnd, s.id]
+    );
+    const bp = how === "card" ? await getBillingProfile(s.user_id) : null;
+    await logActivity(s.user_id, { kind: "wallet", title: "Plan auto-renewed", body: how === "card"
+      ? `Your ${s.tier} plan renewed — $${amount.toFixed(2)} charged to your ${bp?.brand || "card"} •••• ${bp?.last4 || ""}.`
+      : `Your ${s.tier} plan renewed — $${amount.toFixed(2)} paid from your wallet.` }).catch(() => {});
   }
   // Always return the refreshed row (active if renewed, past_due if it failed).
   const [rows] = await pool.query("SELECT * FROM subscriptions WHERE id = ?", [s.id]);
@@ -441,14 +510,51 @@ export async function listNumbers(uid) {
   }));
 }
 
-/** Record a provisioned number against the user (idempotent on the E.164). */
+/** Record a provisioned number against the user (idempotent on the E.164).
+ *  The monthly rental renews 30 days out (see renewDueNumbers). */
 export async function provisionNumber(uid, { e164, kind = "local", telnyxId = "", free = false }) {
+  const renewsAt = Date.now() + 30 * 24 * 3600 * 1000;
   await pool.query(
-    `INSERT INTO numbers (user_id, e164, kind, telnyx_id, free, status) VALUES (?, ?, ?, ?, ?, 'active')
+    `INSERT INTO numbers (user_id, e164, kind, telnyx_id, free, status, renews_at) VALUES (?, ?, ?, ?, ?, 'active', ?)
        ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), kind = VALUES(kind),
-         telnyx_id = VALUES(telnyx_id), free = VALUES(free), status = 'active'`,
-    [uid, String(e164), kind === "tollfree" ? "tollfree" : "local", String(telnyxId || ""), free ? 1 : 0]
+         telnyx_id = VALUES(telnyx_id), free = VALUES(free), status = 'active', renews_at = VALUES(renews_at)`,
+    [uid, String(e164), kind === "tollfree" ? "tollfree" : "local", String(telnyxId || ""), free ? 1 : 0, renewsAt]
   );
+}
+
+/**
+ * Monthly number rentals: every ACTIVE number whose renews_at has passed is
+ * billed for the next month — saved card FIRST (direct), wallet as fallback.
+ * NOTE: no plan includes a free number any more (numbersIncluded: 0 across all
+ * bundles), so EVERY number is billed — including legacy rows still flagged
+ * free=1. When neither payment rail works the number goes 'past_due': it
+ * disappears from the app and stops receiving calls until the user pays
+ * (support can reactivate).
+ */
+export async function renewDueNumbers() {
+  const [due] = await pool.query(
+    "SELECT * FROM numbers WHERE status = 'active' AND renews_at > 0 AND renews_at < ?",
+    [Date.now()]
+  );
+  let renewed = 0;
+  for (const n of due) {
+    try {
+      const nextAt = Number(n.renews_at) + 30 * 24 * 3600 * 1000;
+      const amount = NUMBER_RENTAL[n.kind] ?? NUMBER_RENTAL.local;
+      const label = `Number rental — ${n.e164}`;
+      let paid = await chargeSavedCard(n.user_id, amount, label);
+      if (!paid) paid = await debitIfEnough(n.user_id, amount, label);
+      if (paid) {
+        await pool.query("UPDATE numbers SET renews_at = ? WHERE id = ?", [nextAt, n.id]);
+        await logActivity(n.user_id, { kind: "number", title: "Number renewed", body: `${n.e164} renewed for $${amount.toFixed(2)}/mo.` }).catch(() => {});
+        renewed++;
+      } else {
+        await pool.query("UPDATE numbers SET status = 'past_due' WHERE id = ?", [n.id]);
+        await logActivity(n.user_id, { kind: "number", title: "Number suspended — payment failed", body: `We couldn't collect $${amount.toFixed(2)} for ${n.e164}. Update your card or top up your wallet, then contact support to restore it.` }).catch(() => {});
+      }
+    } catch (e) { console.error("number renewal failed for", n.e164, e.message); }
+  }
+  return renewed;
 }
 
 /* -------------------------------------------------- incoming-call delivery */
@@ -586,7 +692,22 @@ export async function numberCapacity(uid) {
  */
 export async function applyUsage(uid, { minutes = 0, sms = 0 } = {}) {
   const sub = await getActiveSubRow(uid);
-  if (!sub) return { hasPlan: false };
+  if (!sub) {
+    // No plan → PURE pay-as-you-go: every unit billed to the wallet (previously
+    // un-metered — free calls). walletShort mirrors the overflow path below.
+    const cost = +(Number(minutes || 0) * OVERFLOW_RATES.voice + Number(sms || 0) * OVERFLOW_RATES.sms).toFixed(2);
+    let walletShort = false;
+    if (cost > 0) {
+      const bits = [minutes ? `${minutes} min` : "", sms ? `${sms} SMS` : ""].filter(Boolean).join(" + ");
+      try { await debitWallet(uid, cost, `Pay-as-you-go — ${bits}`); }
+      catch {
+        // Wallet short → auto-reload from the saved card, then retry the debit.
+        try { await reloadWalletFromCard(uid); await debitWallet(uid, cost, `Pay-as-you-go — ${bits}`); }
+        catch { walletShort = true; }
+      }
+    }
+    return { hasPlan: false, nearLimit: false, overLimit: false, walletShort, cost };
+  }
   const prevMin = Number(sub.minutes_used), prevSms = Number(sub.sms_used);
   const incMin = Number(sub.minutes_included), incSms = Number(sub.sms_included);
   const newMin = prevMin + Number(minutes || 0);
@@ -601,7 +722,11 @@ export async function applyUsage(uid, { minutes = 0, sms = 0 } = {}) {
   if (cost > 0) {
     const bits = [chargeMin ? `${chargeMin} min` : "", chargeSms ? `${chargeSms} SMS` : ""].filter(Boolean).join(" + ");
     try { await debitWallet(uid, cost, `Pay-as-you-go — ${bits}`); }
-    catch { walletShort = true; }
+    catch {
+      // Wallet short → auto-reload from the saved card, then retry the debit.
+      try { await reloadWalletFromCard(uid); await debitWallet(uid, cost, `Pay-as-you-go — ${bits}`); }
+      catch { walletShort = true; }
+    }
   }
   const pctMin = incMin > 0 ? newMin / incMin : 0;
   const pctSms = incSms > 0 ? newSms / incSms : 0;
@@ -611,12 +736,39 @@ export async function applyUsage(uid, { minutes = 0, sms = 0 } = {}) {
 }
 
 /**
- * Auto-reload the wallet from the user's saved card when overflow can't be
- * covered. PENDING card-on-file billing (PayPal Business) — throws until then so
- * callers fall back to alerting the user. Wired to PAYG_RELOAD.
+ * How many more seconds of talk-time this account can AFFORD right now, pooled
+ * across every concurrent call/profile: plan minutes left + wallet-funded
+ * overflow minutes (at the PAYG voice rate). `liveSec` is the elapsed time of
+ * calls currently in progress (all browsers/profiles), so two simultaneous
+ * calls drain the same pool. Used to gate new calls and to cut running ones.
  */
-export async function reloadWalletFromCard(uid, amount = PAYG_RELOAD) { // eslint-disable-line no-unused-vars
-  throw httpErr(501, "Card auto-reload isn't enabled yet — top up your wallet or upgrade your plan");
+export async function voiceRemainingSec(uid, liveSec = 0) {
+  const sub = await getActiveSubRow(uid);
+  const planSec = sub
+    ? Math.max(0, (Number(sub.minutes_included) - Number(sub.minutes_used))) * 60
+    : 0;
+  const [u] = await pool.query("SELECT wallet_balance FROM users WHERE id = ?", [uid]);
+  const balance = Number(u[0]?.wallet_balance ?? 0);
+  const walletSec = Math.max(0, Math.floor((balance / OVERFLOW_RATES.voice) * 60));
+  // A saved card extends the budget by one auto-reload — the overflow engine
+  // recharges the wallet from it, so don't cut callers who CAN pay.
+  let cardSec = 0;
+  try {
+    const bp = await getBillingProfile(uid);
+    if (bp?.paymentMethodId) cardSec = Math.floor((PAYG_RELOAD / OVERFLOW_RATES.voice) * 60);
+  } catch { /* card check is best-effort */ }
+  return Math.max(0, planSec + walletSec + cardSec - Math.max(0, Math.floor(liveSec)));
+}
+
+/**
+ * Auto-reload the wallet from the user's saved card when overflow can't be
+ * covered (wired to PAYG_RELOAD). Uses the card-on-file; throws when there is
+ * no saved card or Stripe declines, so callers fall back to alerting the user.
+ */
+export async function reloadWalletFromCard(uid, amount = PAYG_RELOAD) {
+  const ok = await chargeSavedCard(uid, amount, `Wallet auto-reload $${Number(amount).toFixed(2)}`);
+  if (!ok) throw httpErr(402, "Card auto-reload failed — top up your wallet or update your card");
+  return creditWallet(uid, amount, `Auto-reload from card $${Number(amount).toFixed(2)}`);
 }
 
 /**

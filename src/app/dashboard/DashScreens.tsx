@@ -345,7 +345,7 @@ const DIR: Record<string, { Icon: typeof Phone; color: string }> = {
 };
 
 export function DashCalls({ onOpenDialer }: { onOpenDialer: () => void }) {
-  const { state } = useApp();
+  const { state, placeCall } = useApp();
   const calls = state.calls;
   return (
     <Panel title={`Call history (${calls.length})`} action={<button style={primaryBtn} onClick={onOpenDialer}><Phone size={15} /> Open dialer</button>} bodyPad={calls.length ? 8 : 0}>
@@ -354,7 +354,7 @@ export function DashCalls({ onOpenDialer }: { onOpenDialer: () => void }) {
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}>Contact</th><th style={th}>Direction</th><th style={th}>Status</th><th style={th}>Duration</th><th style={{ ...th, textAlign: "right" }}>When</th></tr></thead>
+            <thead><tr><th style={th}>Contact</th><th style={th}>Direction</th><th style={th}>Status</th><th style={th}>Duration</th><th style={{ ...th, textAlign: "right" }}>When</th><th style={{ ...th, textAlign: "right" }}></th></tr></thead>
             <tbody>
               {calls.map((k) => { const d = DIR[k.direction] || DIR.outgoing; return (
                 <tr key={k.id}>
@@ -363,6 +363,14 @@ export function DashCalls({ onOpenDialer }: { onOpenDialer: () => void }) {
                   <td style={{ ...td, color: C.muted }}>{k.status}</td>
                   <td style={{ ...td, fontVariantNumeric: "tabular-nums", color: C.muted }}>{k.duration || "—"}</td>
                   <td style={{ ...td, textAlign: "right", color: C.faint }}>{k.time}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    <button onClick={() => placeCall(k.contact)} title={`Call back ${k.contact}`} style={{
+                      width: 32, height: 32, borderRadius: 10, background: "rgba(34,197,94,0.14)", border: "none",
+                      cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                      <Phone size={15} color={C.green} />
+                    </button>
+                  </td>
                 </tr>
               ); })}
             </tbody>

@@ -56,8 +56,8 @@ export function NotifyBar() {
       <BellRing size={17} style={{ flexShrink: 0 }} />
       <p style={{ flex: 1, fontSize: 12.5, fontWeight: 700, lineHeight: 1.35 }}>
         {denied
-          ? "Notifications are blocked — tap the lock icon in your browser's address bar and allow notifications to get incoming-call alerts."
-          : busy ? "Waiting for the browser's permission popup…" : "Never miss a call — get call alerts even when this tab is in the background."}
+          ? "Notifications are blocked — tap the lock icon in your browser's address bar and allow notifications to get call & message alerts."
+          : busy ? "Waiting for the browser's permission popup…" : "Never miss a call or text — get alerts even when this tab is in the background."}
       </p>
       {!denied && (
         <button onClick={(e) => { e.stopPropagation(); allow(); }} disabled={busy} style={{

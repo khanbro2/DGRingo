@@ -1,0 +1,83 @@
+name: Deploy web to digiringo.com
+
+# Builds the production web bundle in the cloud and ships it to Hostinger over
+# SSH. Runs from GitHub's runners (a fresh IP every time) so it NEVER trips the
+# host's fail2ban/SSH throttle the way repeated local scp does. One-time setup:
+# add a repo secret `HOSTINGER_SSH_KEY` = the full contents of the private deploy
+# key (~/.ssh/digiringo_deploy). Then every push to main auto-deploys; you can
+# also trigger it manually from the Actions tab ("Run workflow").
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "src/**"
+      - "server/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vite.config.*"
+      - ".env.production"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+# Never let two deploys overlap.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build web assets (production / live)
+        run: pnpm build
+
+      - name: Set up SSH deploy key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Deploy over SSH (rsync)
+        env:
+          SSH_HOST: 153.92.10.88
+          SSH_USER: u545142772
+          SSH_PORT: "65002"
+          BASE: domains/digiringo.com/public_html
+        run: |
+          RSH="ssh -i ~/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
+          # 1) Front-end: sync the built bundle, pruning stale hashed files.
+          rsync -az --delete -e "$RSH" dist/ "$SSH_USER@$SSH_HOST:$BASE/dist/"
+          # 2) Server code: only .mjs + SQL migrations — never .env or node_modules.
+          rsync -az -e "$RSH" \
+            --include='*/' --include='*.mjs' --include='migrations/*.sql' --exclude='*' \
+            server/ "$SSH_USER@$SSH_HOST:$BASE/server/"
+          # 3) Restart the Node app (Passenger watches tmp/restart.txt).
+          $RSH "$SSH_USER@$SSH_HOST" "mkdir -p $BASE/tmp && touch $BASE/tmp/restart.txt && echo '✓ deployed + restarted'"
+
+      - name: Verify
+        run: |
+          sleep 5
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://digiringo.com/app || echo "000")
+          echo "digiringo.com/app → $code"
+          bundle=$(curl -s "https://digiringo.com/app?cb=$(date +%s)" | grep -oE 'main-[A-Za-z0-9_-]+\.js' | head -1)
+          echo "live bundle: $bundle"

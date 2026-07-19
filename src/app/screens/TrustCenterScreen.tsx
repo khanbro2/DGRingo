@@ -5,7 +5,7 @@ import { useApp } from "../store/AppStore";
 import type { PhoneNumber } from "../core/types";
 import { BrandForm, CampaignForm, RegulatoryDocsForm } from "./VerificationForms";
 
-interface Props { onBack: () => void; }
+interface Props { onBack: () => void; desktop?: boolean; }
 
 type Form =
   | { kind: "brand" }
@@ -23,7 +23,7 @@ type Form =
  *  • Other countries → REGULATORY documents: upload proof of ID / address.
  * Everything happens in-app (no Telnyx popup); the store submits to Telnyx.
  */
-export function TrustCenterScreen({ onBack }: Props) {
+export function TrustCenterScreen({ onBack, desktop = false }: Props) {
   const { state, registerNumber, showToast } = useApp();
   const [form, setForm] = useState<Form | null>(null);
   const pending = state.numbers.filter((n) => n.verification !== "verified");
@@ -135,9 +135,9 @@ export function TrustCenterScreen({ onBack }: Props) {
       </div>
 
       {/* Verification forms (in-app — no Telnyx popup) */}
-      {form?.kind === "brand" && <BrandForm onClose={() => setForm(null)} />}
-      {form?.kind === "campaign" && <CampaignForm numberId={form.numberId} onClose={() => setForm(null)} />}
-      {form?.kind === "docs" && <RegulatoryDocsForm numberId={form.numberId} phoneNumber={form.phoneNumber} onClose={() => setForm(null)} />}
+      {form?.kind === "brand" && <BrandForm onClose={() => setForm(null)} desktop={desktop} />}
+      {form?.kind === "campaign" && <CampaignForm numberId={form.numberId} onClose={() => setForm(null)} desktop={desktop} />}
+      {form?.kind === "docs" && <RegulatoryDocsForm numberId={form.numberId} phoneNumber={form.phoneNumber} onClose={() => setForm(null)} desktop={desktop} />}
     </div>
   );
 }

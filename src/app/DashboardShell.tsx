@@ -117,7 +117,7 @@ export function DashboardShell() {
       case "activity": return <DashActivity />;
       case "plans":    return <DashPlans onTopUp={() => go("wallet")} />;
       case "wallet":   return <WalletScreen onOpenTrust={() => go("trust")} desktop />;
-      case "trust":    return <TrustCenterScreen onBack={() => go("home")} />;
+      case "trust":    return <TrustCenterScreen onBack={() => go("home")} desktop />;
       case "settings": return <SettingsScreen go={goSettings} />;
     }
   };
@@ -148,7 +148,9 @@ export function DashboardShell() {
   };
 
   return (
-    <div style={{ position: "relative", height: "100vh", width: "100vw", display: "flex", background: C.bg, fontFamily: font.sans, overflow: "hidden" }}>
+    // minWidth + overflowX: a small laptop window scrolls horizontally instead
+    // of ever collapsing into the phone UI — desktop stays desktop.
+    <div style={{ position: "relative", height: "100vh", width: "100vw", minWidth: 900, display: "flex", background: C.bg, fontFamily: font.sans, overflow: "hidden", overflowX: "auto" }}>
       {/* ---------- Sidebar ---------- */}
       <aside style={{ width: 252, flexShrink: 0, background: C.cardAlt, borderRight: `1px solid ${C.line}`, display: "flex", flexDirection: "column", padding: "20px 14px 14px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 8px 20px" }}>

@@ -43,19 +43,76 @@ async function stripeApi(path, params) {
   return j;
 }
 
+/** GET a Stripe object (payment intent, payment method, setup intent, …). */
+export async function stripeGet(path) {
+  const r = await fetch(`https://api.stripe.com/v1${path}`, {
+    headers: { Authorization: `Bearer ${secret()}` },
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || `Stripe error (${r.status})`);
+  return j;
+}
+
+/** Create (or reuse) a Stripe Customer so cards can be saved against them. */
+export async function createCustomer({ email, name, metadata }) {
+  return stripeApi("/customers", { email, name, metadata });
+}
+
+/** Hosted Checkout in SETUP mode — saves/replaces a card, charges nothing. */
+export async function createSetupSession({ customerId, metadata, successUrl, cancelUrl }) {
+  if (!stripeConfigured()) throw new Error("Stripe is not configured");
+  const session = await stripeApi("/checkout/sessions", {
+    mode: "setup",
+    customer: customerId,
+    payment_method_types: ["card"],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    metadata,
+  });
+  return { id: session.id, url: session.url };
+}
+
+/** Charge a saved card off-session (renewals). Throws if the charge fails. */
+export async function chargeOffSession({ customerId, paymentMethodId, amountCents, description, metadata }) {
+  if (!stripeConfigured()) throw new Error("Stripe is not configured");
+  return stripeApi("/payment_intents", {
+    amount: Math.round(amountCents),
+    currency: "usd",
+    customer: customerId,
+    payment_method: paymentMethodId,
+    off_session: "true",
+    confirm: "true",
+    description,
+    metadata,
+  });
+}
+
+/** Masked card details {brand,last4,expMonth,expYear,pmId} from a PaymentIntent
+ *  or SetupIntent id — for showing "VISA •••• 4242" and saving the default card. */
+export async function cardFromIntent(intentId) {
+  const isSetup = String(intentId).startsWith("seti_");
+  const intent = await stripeGet(`/${isSetup ? "setup_intents" : "payment_intents"}/${intentId}`);
+  const pmId = intent.payment_method;
+  if (!pmId) return null;
+  const pm = await stripeGet(`/payment_methods/${pmId}`);
+  const c = pm.card || {};
+  return { pmId, brand: c.brand || "", last4: c.last4 || "", expMonth: c.exp_month || 0, expYear: c.exp_year || 0 };
+}
+
 /**
  * Create a hosted Checkout Session.
  *   lineItems: [{ name, amountCents, quantity? }]
  *   metadata:  string map carried to the webhook (uid, kind, …)
  */
-export async function createCheckoutSession({ lineItems, metadata, successUrl, cancelUrl, customerEmail }) {
+export async function createCheckoutSession({ lineItems, metadata, successUrl, cancelUrl, customerEmail, customerId }) {
   if (!stripeConfigured()) throw new Error("Stripe is not configured");
   const params = {
     mode: "payment",
     success_url: successUrl,
     cancel_url: cancelUrl,
     metadata,
-    payment_intent_data: { metadata },
+    // save the card for off-session renewals (auto-renew charges it directly)
+    payment_intent_data: { metadata, setup_future_usage: "off_session" },
     line_items: lineItems.map((li) => ({
       quantity: li.quantity || 1,
       price_data: {
@@ -65,7 +122,11 @@ export async function createCheckoutSession({ lineItems, metadata, successUrl, c
       },
     })),
   };
-  if (customerEmail) params.customer_email = customerEmail;
+  if (customerId) params.customer = customerId;         // reuse the saved customer
+  else {
+    params.customer_creation = "always";                // create one to attach the card to
+    if (customerEmail) params.customer_email = customerEmail;
+  }
   const session = await stripeApi("/checkout/sessions", params);
   return { id: session.id, url: session.url };
 }

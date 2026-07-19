@@ -1,8 +1,9 @@
-import { useState, type CSSProperties } from "react";
-import { ArrowLeft, ArrowDownLeft, ArrowUpRight, Plus, X, ShieldAlert, Loader2 } from "lucide-react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { ArrowLeft, ArrowDownLeft, ArrowUpRight, Plus, X, ShieldAlert, Loader2, CreditCard, RefreshCw } from "lucide-react";
 import { C, font, radius, gradients } from "../core/theme";
 import { useApp } from "../store/AppStore";
 import { startCheckout, stripeReady } from "../services/stripe";
+import { apiGetPaymentMethod, apiChangeCard, type ApiSavedCard } from "../services/api";
 
 interface Props { onBack?: () => void; onOpenTrust: () => void; desktop?: boolean; }
 
@@ -22,6 +23,30 @@ export function WalletScreen({ onBack, onOpenTrust, desktop }: Props) {
   const [busy, setBusy] = useState<number | null>(null); // amount currently checking out
   const [custom, setCustom] = useState("");
   const unverified = state.numbers.filter((n) => n.verification !== "verified").length;
+
+  // Saved card on file (masked — Stripe holds the real card). Renewals charge it
+  // directly; here the user can see it and swap it via a hosted Stripe flow.
+  const [card, setCard] = useState<ApiSavedCard | null>(null);
+  const [cardLoaded, setCardLoaded] = useState(false);
+  const [cardBusy, setCardBusy] = useState(false);
+  useEffect(() => {
+    if (!stripeReady()) { setCardLoaded(true); return; }
+    apiGetPaymentMethod()
+      .then((r) => setCard(r.card))
+      .catch(() => { /* section still renders with "no card" */ })
+      .finally(() => setCardLoaded(true));
+  }, []);
+
+  const changeCard = async () => {
+    setCardBusy(true);
+    try {
+      const { url } = await apiChangeCard();
+      window.location.href = url; // hosted Stripe setup page (card never touches us)
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't start the card update", "error");
+      setCardBusy(false);
+    }
+  };
 
   // Fallback for local dev / mock (no Stripe configured): credit locally.
   const topUpSimulated = (amount: number) => { addBalance(amount); setSheet(false); showToast(`$${amount.toFixed(2)} added (test)`); };
@@ -61,6 +86,44 @@ export function WalletScreen({ onBack, onOpenTrust, desktop }: Props) {
           </button>
         </div>
       </div>
+
+      {/* Payment method — the card on file for auto-renewals (masked; the real
+          card lives at Stripe). Change swaps it via a hosted setup page. */}
+      {stripeReady() && cardLoaded && (
+        <div style={{ padding: "0 20px 16px" }}>
+          <p style={{ color: C.text, fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Payment method</p>
+          <div style={{ background: C.card, borderRadius: radius.lg, border: `1px solid ${C.lineSoft}`, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(79,142,247,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <CreditCard size={20} color={C.blue} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {card ? (
+                <>
+                  <p style={{ color: C.text, fontSize: 14, fontWeight: 700, textTransform: "capitalize", fontFamily: font.mono }}>
+                    {card.brand} •••• {card.last4}
+                  </p>
+                  <p style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>
+                    Expires {String(card.expMonth).padStart(2, "0")}/{String(card.expYear).slice(-2)} · used for auto-renewals
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p style={{ color: C.text, fontSize: 14, fontWeight: 700 }}>No card saved</p>
+                  <p style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>Add a card so plans & numbers renew automatically</p>
+                </>
+              )}
+            </div>
+            <button onClick={changeCard} disabled={cardBusy} style={{
+              display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 11,
+              background: C.input, border: `1px solid ${C.line}`, color: C.text, fontSize: 12.5, fontWeight: 700,
+              cursor: cardBusy ? "default" : "pointer", fontFamily: font.sans, opacity: cardBusy ? 0.6 : 1, flexShrink: 0,
+            }}>
+              {cardBusy ? <Loader2 size={14} className="dg-spin" /> : <RefreshCw size={13} />}
+              {card ? "Change" : "Add card"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Verification gating note */}
       {unverified > 0 && (

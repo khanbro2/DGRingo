@@ -32,22 +32,24 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { /* ignore */ }
-  const title = data.title || "Incoming call";
-  const body = data.body || "Someone is calling you";
+  const isSms = data.type === "sms";
+  const title = data.title || (isSms ? "New message" : "Incoming call");
+  const body = data.body || (isSms ? "You have a new message" : "Someone is calling you");
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      tag: "dg-incoming-call",
+      // Per-sender tag so multiple texts from different people don't collapse,
+      // while repeat texts from the same person update one notification.
+      tag: isSms ? `dg-sms-${data.from || "unknown"}` : "dg-incoming-call",
       renotify: true,
-      requireInteraction: true,
+      requireInteraction: !isSms, // a call demands action; a text is passive
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
-      vibrate: [200, 100, 200, 100, 200],
-      data: { url: "/app", from: data.from || "" },
-      actions: [
-        { action: "open", title: "Answer" },
-        { action: "dismiss", title: "Dismiss" },
-      ],
+      vibrate: isSms ? [120, 60, 120] : [200, 100, 200, 100, 200],
+      data: { url: isSms ? "/app?section=inbox" : "/app", from: data.from || "", type: data.type || "call" },
+      actions: isSms
+        ? [{ action: "open", title: "View" }, { action: "dismiss", title: "Dismiss" }]
+        : [{ action: "open", title: "Answer" }, { action: "dismiss", title: "Dismiss" }],
     })
   );
 });
@@ -55,11 +57,12 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   if (event.action === "dismiss") return;
+  const target = (event.notification.data && event.notification.data.url) || "/app";
   event.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const c of all) {
       if (c.url.includes("/app")) { try { await c.focus(); return; } catch { /* fall through */ } }
     }
-    await self.clients.openWindow("/app");
+    await self.clients.openWindow(target);
   })());
 });

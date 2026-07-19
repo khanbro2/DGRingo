@@ -64,6 +64,15 @@ export const apiForgotPassword = (email: string) =>
 
 export const apiWallet = () => req<ApiWallet>("/api/wallet");
 
+/** The saved (masked) card on file, e.g. { brand:"visa", last4:"4242", … } or null. */
+export interface ApiSavedCard { brand: string; last4: string; expMonth: number; expYear: number; }
+export const apiGetPaymentMethod = () =>
+  req<{ card: ApiSavedCard | null }>("/api/billing/payment-method");
+
+/** Start the hosted change-card flow; resolves with the Stripe URL to redirect to. */
+export const apiChangeCard = () =>
+  req<{ url: string }>("/api/billing/change-card", { method: "POST" });
+
 export type PayMethod = "wallet" | "card";
 export type NumberKind = "local" | "tollfree";
 export type BillingCycle = "monthly" | "annual";

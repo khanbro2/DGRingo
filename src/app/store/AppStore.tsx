@@ -9,6 +9,7 @@ import type {
 import { initialState } from "./seed";
 import { telnyx } from "../services/telnyx";
 import { toAppNumber, ownedToAppNumber, toAppConversation, toAppCall, availableToApp } from "../services/telnyx/adapt";
+import type { ConversationThread } from "../services/telnyx/types";
 import { retailPrice } from "../core/pricing";
 import { getBundle, NUMBER_RENTAL } from "../core/plans";
 import type { BillingCycle, NumberKind, PayMethod } from "../core/plans";
@@ -25,6 +26,7 @@ import {
   subscribeCall, clearCall as voiceClear, type CallSnapshot,
 } from "../services/voice";
 import { initWebPush } from "../services/push";
+import { playMessageChime, getSmsSoundOn } from "../services/ringtone";
 
 /** Map the backend user/wallet shapes onto the app's domain types. */
 const toAppUser = (u: ApiUser): User => {
@@ -48,6 +50,24 @@ const toAppSub = (s: ApiSubscription | null): Subscription | null => {
 
 /** A purchasable number returned by search (retail-priced). */
 export interface AvailableNumber { e164: string; number: string; price: number; sms: boolean; voice: boolean; }
+
+const onlyDigits = (s: string) => (s || "").replace(/\D/g, "");
+
+/** Adapt server threads → app conversations, matching each thread to its owned
+ *  number by DIGITS (server phone_number_id ≠ app number id — different Telnyx
+ *  resources; the phone number itself is the only stable key). */
+const mapThreadsToConvos = (threads: ConversationThread[], numbers: PhoneNumber[]): Conversation[] =>
+  threads.map((t) => {
+    const c = toAppConversation(t);
+    const match = t.owned ? numbers.find((n) => onlyDigits(n.number) === onlyDigits(t.owned!)) : undefined;
+    return match ? { ...c, numberId: match.id } : c;
+  });
+
+/** Stable identity for a thread across id namespaces: owned-number digits + contact digits. */
+const convoKey = (c: Conversation, numbers: PhoneNumber[]) => {
+  const num = numbers.find((n) => n.id === c.numberId);
+  return `${onlyDigits(num?.number ?? c.numberId)}|${onlyDigits(c.contact)}`;
+};
 
 const toE164 = (display: string) => {
   const d = display.replace(/[^\d+]/g, "");
@@ -76,6 +96,7 @@ type Action =
   | { t: "APPEND_MESSAGE"; convoId: string; message: Message }
   | { t: "UPDATE_MSG_STATUS"; convoId: string; messageId: string; status: MessageDeliveryStatus; telnyxId?: string }
   | { t: "SET_CONVERSATIONS"; conversations: Conversation[] }
+  | { t: "MERGE_CONVERSATIONS"; conversations: Conversation[] }
   | { t: "ADD_CONVERSATION"; conversation: Conversation }
   | { t: "SET_CALLS"; calls: CallLog[] }
   | { t: "MARK_READ"; convoId: string }
@@ -134,6 +155,34 @@ function reducer(s: AppState, a: Action): AppState {
 
     case "SET_CONVERSATIONS":
       return { ...s, conversations: a.conversations };
+
+    case "MERGE_CONVERSATIONS": {
+      // Fold a fresh server snapshot into local state WITHOUT clobbering
+      // optimistic sends, just-read state, or a not-yet-persisted new thread.
+      const byKey = new Map(s.conversations.map((c) => [convoKey(c, s.numbers), c]));
+      const seen = new Set<string>();
+      const merged = a.conversations.map((inc) => {
+        const key = convoKey(inc, s.numbers);
+        seen.add(key);
+        const local = byKey.get(key);
+        if (!local) return inc; // brand-new inbound thread
+        const grew = inc.messages.length > local.messages.length;
+        // Keep local outbound messages the server hasn't echoed yet (still sending/failed).
+        const echoed = new Set(inc.messages.filter((m) => m.sent).map((m) => m.text));
+        const pending = local.messages.filter((m) => m.sent && (m.status === "sending" || m.status === "failed") && !echoed.has(m.text));
+        return {
+          ...inc,
+          id: local.id, // preserve local id so the open thread (activeConvoId) stays valid
+          messages: [...inc.messages, ...pending],
+          // Never silently re-flag a thread the user already read; only surface
+          // unread when genuinely new messages arrived.
+          unread: grew ? inc.unread : Math.min(local.unread, inc.unread),
+        };
+      });
+      // Preserve purely-local threads (e.g. a brand-new compose not yet on the server).
+      const localOnly = s.conversations.filter((c) => !seen.has(convoKey(c, s.numbers)));
+      return { ...s, conversations: [...localOnly, ...merged] };
+    }
 
     case "ADD_CONVERSATION":
       return { ...s, conversations: [a.conversation, ...s.conversations] };
@@ -314,6 +363,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const loadedFor = useRef<string | null>(null);
+  // Inbound-SMS alerting: ids of inbound messages already seen (so we chime only
+  // for genuinely new ones), and a flag that we've done the initial seed.
+  const seenInbound = useRef<Set<string>>(new Set());
+  const inboxSeeded = useRef(false);
 
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -449,6 +502,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         syncBillingSoon();
         window.history.replaceState({}, "", window.location.pathname);
       }
+      // Returning from the hosted change-card flow (?card=saved) — the webhook
+      // stored the new card; the Wallet screen re-fetches it on mount.
+      if (q.get("card") === "saved") {
+        showToast("Card saved — future renewals will use it");
+        window.history.replaceState({}, "", window.location.pathname);
+      }
     } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -517,7 +576,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ t: "SET_NUMBERS", numbers: appNumbers });
       }
       if (brandR.status === "fulfilled" && brandR.value) dispatch({ t: "SET_BRAND", brand: { id: brandR.value.brandId, displayName: brandR.value.displayName, status: brandR.value.status } });
-      if (convosR.status === "fulfilled") dispatch({ t: "SET_CONVERSATIONS", conversations: convosR.value.map(toAppConversation) });
+      if (convosR.status === "fulfilled") {
+        dispatch({ t: "SET_CONVERSATIONS", conversations: mapThreadsToConvos(convosR.value, appNumbers) });
+        // Seed the "already seen" set so we don't chime for the whole backlog on
+        // login — only messages that arrive AFTER this point trigger an alert.
+        for (const t of convosR.value) for (const m of t.messages) if (m.direction === "inbound") seenInbound.current.add(m.id);
+        inboxSeeded.current = true;
+      }
       if (cdrsR.status === "fulfilled") {
         const calls = telnyx.mode === "live"
           ? (cdrsR.value as ApiCallLog[]).map((c) => apiCallToApp(c, appNumbers))
@@ -526,6 +591,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     })();
   }, [state.user?.id, state.numbers]);
+
+  // Live inbox: poll the inbox every 12s while signed in so inbound SMS appears
+  // without a manual refresh. Skipped when the tab is hidden (and fired once on
+  // re-focus) to avoid needless traffic. The merge preserves optimistic sends.
+  useEffect(() => {
+    if (telnyx.mode !== "live") return;
+    const uid = state.user?.id;
+    if (!uid || !state.user?.emailVerified) return;
+    let stopped = false;
+    const poll = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const threads = await telnyx.listConversations();
+        if (stopped) return;
+        dispatch({ t: "MERGE_CONVERSATIONS", conversations: mapThreadsToConvos(threads, numbersRef.current) });
+        // Alert on genuinely-new inbound messages. (When the tab is hidden this
+        // poll is skipped and the server's Web Push covers it instead, so there's
+        // no double alert.)
+        const fresh: { from: string; text: string }[] = [];
+        for (const t of threads) for (const m of t.messages) {
+          if (m.direction === "inbound" && !seenInbound.current.has(m.id)) {
+            seenInbound.current.add(m.id);
+            if (inboxSeeded.current) fresh.push({ from: t.contact, text: m.text || "" });
+          }
+        }
+        inboxSeeded.current = true;
+        if (fresh.length) {
+          if (getSmsSoundOn()) playMessageChime();
+          const f = fresh[0];
+          showToast(fresh.length === 1 ? `New message from ${f.from}` : `${fresh.length} new messages`);
+        }
+      } catch { /* transient network error — the next tick retries */ }
+    };
+    const iv = setInterval(poll, 12_000);
+    const onVisible = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { stopped = true; clearInterval(iv); document.removeEventListener("visibilitychange", onVisible); };
+  }, [state.user?.id, state.user?.emailVerified]);
 
   // Register the 10DLC brand from the full business profile the form collects.
   const registerBrand: Store["registerBrand"] = useCallback(async (data) => {
@@ -536,8 +639,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       showToast(b.status === "VERIFIED" ? "Brand verified ✓" : "Brand submitted for review");
       return { ok: true };
     } catch (e) {
-      showToast("Brand registration failed", "error");
-      return { ok: false, error: e instanceof Error ? e.message : "Brand registration failed" };
+      // Surface Telnyx/TCR's real rejection reason (e.g. "EIN does not match
+      // business records") instead of a generic failure, so the user can fix it.
+      const reason = e instanceof Error && e.message ? e.message : "Brand registration failed";
+      showToast(reason, "error");
+      return { ok: false, error: reason };
     }
   }, [pushActivity, showToast]);
 
@@ -766,7 +872,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return ok ? buyNumber(n, { kind: "local", free: false }) : false;
     }
     try {
-      await startCheckout({ kind: "plan_number", tier, cycle, phone: n.e164, numberKind: "local" });
+      // PhoneNumber has no `e164` field — derive strict E.164 from the formatted
+      // display number (n.e164 was undefined here, so the webhook silently
+      // skipped provisioning the paid number).
+      await startCheckout({ kind: "plan_number", tier, cycle, phone: toE164(n.number), numberKind: "local" });
       return true; // page redirects to Stripe Checkout
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Checkout failed", "error");

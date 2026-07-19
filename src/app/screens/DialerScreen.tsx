@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { X, Delete, Phone, ChevronDown, Check } from "lucide-react";
 import { C, gradients, font } from "../core/theme";
 import { useApp, useActiveNumber } from "../store/AppStore";
@@ -18,11 +18,14 @@ export function DialerScreen({ onClose, onCall }: Props) {
   const active = useActiveNumber();
   const [value, setValue] = useState("");
   const [showPicker, setShowPicker] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   // Only numbers with voice capability can place calls.
   const callable = state.numbers.filter((n) => n.voice);
 
-  const press = (d: string) => setValue((v) => (v.length < 18 ? v + d : v));
-  const back = () => setValue((v) => v.slice(0, -1));
+  // Keep only dialable characters (digits, +, *, #) — strips spaces/dashes/parens from pasted numbers.
+  const sanitize = (raw: string) => raw.replace(/[^\d+*#]/g, "").slice(0, 18);
+  const press = (d: string) => { setValue((v) => sanitize(v + d)); inputRef.current?.focus(); };
+  const back = () => { setValue((v) => v.slice(0, -1)); inputRef.current?.focus(); };
   const call = () => {
     if (!value.trim()) { showToast("Enter a number to call", "error"); return; }
     onCall(value.trim());
@@ -45,11 +48,26 @@ export function DialerScreen({ onClose, onCall }: Props) {
         </button>
       </div>
 
-      {/* Display */}
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
-        <p style={{ color: value ? C.text : C.faint, fontSize: 30, fontWeight: 700, fontFamily: font.mono, letterSpacing: 1, padding: "0 20px", textAlign: "center", wordBreak: "break-all" }}>
-          {value || "Enter number"}
-        </p>
+      {/* Display — a real input: type with the keyboard, paste with Ctrl+V or right-click */}
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0, padding: "0 20px" }}>
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => setValue(sanitize(e.target.value))}
+          onKeyDown={(e) => e.key === "Enter" && call()}
+          autoFocus
+          inputMode="none"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Enter number"
+          aria-label="Phone number"
+          className="dg-dialer-input"
+          style={{
+            width: "100%", background: "transparent", border: "none", outline: "none",
+            color: C.text, fontSize: 30, fontWeight: 700, fontFamily: font.mono,
+            letterSpacing: 1, textAlign: "center", caretColor: C.green,
+          }}
+        />
       </div>
 
       {/* Keypad */}
