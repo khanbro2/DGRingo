@@ -26,13 +26,13 @@ public class MainActivity extends BridgeActivity {
     // The in-app WebRTC UI shows the call while the app is on-screen, so tell the
     // messaging service to skip its notification then (avoids a double ring).
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         CallMessagingService.appForeground = true;
     }
 
     @Override
-    protected void onPause() {
+    public void onPause() {
         super.onPause();
         CallMessagingService.appForeground = false;
     }
