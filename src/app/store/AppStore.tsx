@@ -20,6 +20,7 @@ import {
   type ApiUser, type ApiWallet, type ApiSubscription, type ApiCallLog, type ApiOwnedNumber, type ApiActivityItem,
 } from "../services/api";
 import { loadStripeConfig, startCheckout } from "../services/stripe";
+import { flushPushToken } from "../native";
 import {
   startCall as voiceStart, hangupCall as voiceHangup, toggleMute as voiceToggleMute,
   answerCall as voiceAnswer, register as voiceRegister, unregister as voiceUnregister,
@@ -435,6 +436,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const res = name ? await apiRegister(email, password, name) : await apiLogin(email, password);
       saveToken(res.token);
+      // Now that we have an account, ship any FCM token that registered before
+      // login so background call/SMS alerts work in this very session.
+      flushPushToken();
       dispatch({ t: "LOGIN", user: toAppUser(res.user) });
       try {
         const w = await apiWallet();

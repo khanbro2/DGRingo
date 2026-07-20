@@ -45,13 +45,26 @@ export async function initNative(): Promise<void> {
   if (PUSH_ENABLED) await initPush();
 }
 
+// The FCM token arrives once, at app launch, via the `registration` event — but
+// on a fresh install the user isn't logged in yet, so `sendPushToken` can't
+// attach it to an account and drops it. We cache it here; `flushPushToken()`
+// (called right after a successful login) then ships the cached token so
+// background alerts work in the SAME session, not only after the next restart.
+let lastPushToken: string | null = null;
+
+/** Re-send the cached FCM token after login. No-op on web / before registration. */
+export async function flushPushToken(): Promise<void> {
+  if (!isNative() || !lastPushToken) return;
+  await sendPushToken(lastPushToken).catch(() => {});
+}
+
 async function initPush(): Promise<void> {
   try {
     const { PushNotifications } = await import("@capacitor/push-notifications");
     const perm = await PushNotifications.requestPermissions();
     if (perm.receive !== "granted") return;
 
-    PushNotifications.addListener("registration", (t) => { sendPushToken(t.value).catch(() => {}); });
+    PushNotifications.addListener("registration", (t) => { lastPushToken = t.value; sendPushToken(t.value).catch(() => {}); });
     PushNotifications.addListener("registrationError", () => { /* ignore */ });
     // Foreground / tapped notifications — the incoming-call UI is driven by the
     // WebRTC socket once the app is awake; the push just wakes/att­racts it.
