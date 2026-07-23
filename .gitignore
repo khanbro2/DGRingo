@@ -33,3 +33,6 @@ Thumbs.db
 # dev screenshots / reference captures (not part of the app)
 /*.png
 /refference/
+
+# Play Store build artifacts (AAB/APK downloaded from CI)
+/playstore/build/
