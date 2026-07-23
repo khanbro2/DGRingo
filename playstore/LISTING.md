@@ -3,6 +3,9 @@
 Everything in this folder is ready to paste/upload into Play Console.
 Assets: `icon-512.png`, `feature-graphic-1024x500.png`, `screenshots/*.png` (6 × 1080×1920).
 
+Icon/graphic branding = the client's official **DGR** mark on brand purple
+(`#7C5CFF`); masters live in `/brand`.
+
 ---
 
 ## 1. App details
